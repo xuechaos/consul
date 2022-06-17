@@ -1,0 +1,36 @@
+@import './skin';
+@import './layout';
+span.policy-service-identity,
+span.policy-node-identity,
+.leader,
+.consul-auth-method-type,
+.topology-metrics-source-type,
+.consul-transparent-proxy {
+  @extend %pill-200, %frame-gray-600;
+}
+span.policy-service-identity::before,
+span.policy-node-identity::before {
+  vertical-align: unset;
+}
+span.policy-node-identity::before {
+  content: 'Node Identity: ';
+}
+span.policy-service-identity::before {
+  content: 'Service Identity: ';
+}
+%pill.leader::before {
+  @extend %with-star-outline-mask, %as-pseudo;
+}
+%pill.jwt::before {
+  @extend %with-logo-jwt-color-icon, %as-pseudo;
+}
+%pill.oidc::before {
+  @extend %with-logo-oidc-color-icon, %as-pseudo;
+}
+%pill.kubernetes::before {
+  @extend %with-logo-kubernetes-color-icon, %as-pseudo;
+}
+%pill.aws-iam::before {
+  --icon-name: icon-aws-color;
+  content: '';
+}

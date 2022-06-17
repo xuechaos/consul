@@ -1,0 +1,11 @@
+.consul-intention-fieldsets {
+  .value-allow > :last-child::before {
+    @extend %with-allow-500;
+  }
+  .value-deny > :last-child::before {
+    @extend %with-deny-500;
+  }
+  .value- > :last-child::before {
+    @extend %with-l7-500;
+  }
+}

@@ -1,0 +1,169 @@
+<Route
+  @name={{routeName}}
+as |route|>
+  <DataLoader @src={{
+      uri '/${partition}/${nspace}/${dc}/topology/${name}/${kind}'
+      (hash
+        partition=route.params.partition
+        nspace=route.params.nspace
+        dc=route.params.dc
+        name=route.params.name
+        kind=(or route.model.items.firstObject.Service.Kind '')
+      )
+  }} as |loader|>
+
+    <BlockSlot @name="error">
+      <AppError
+        @error={{loader.error}}
+        @login={{route.model.app.login.open}}
+      />
+    </BlockSlot>
+
+    <BlockSlot @name="loaded">
+{{#let
+  route.params.nspace
+  route.model.dc
+  route.model.items
+  loader.data
+as |nspace dc items topology|}}
+  <div class="tab-section">
+
+    <div
+      class="topology-notices"
+    >
+      <Disclosure
+        @expanded={{true}}
+        as |disclosure|
+      >
+        {{! Make a map of key=enabled to tell us which notices are enabled }}
+        {{! The `false` here is so we can easily open all the notices up by changing to `true` }}
+        {{#let
+          (from-entries (array
+            (array 'filtered-by-acls' (or false topology.FilteredByACLs))
+            (array 'default-allow' (or false (eq dc.DefaultACLPolicy 'allow')))
+            (array 'wildcard-intention' (or false topology.wildcardIntention))
+            (array 'not-defined-intention' (or false topology.notDefinedIntention))
+            (array 'no-dependencies' (or false (and topology.noDependencies (can 'use acls'))))
+            (array 'acls-disabled' (or false (and topology.noDependencies (not (can 'use acls')))))
+          ))
+        as |notices|}}
+
+          {{! Make an array only of truthy values to we know how many notices are enabled }}
+          {{#let (without false
+            (values notices)
+          ) as |noticesEnabled|}}
+
+            {{! Render any enabled notices }}
+            {{#each-in notices as |prop enabled|}}
+              {{#if enabled}}
+                <disclosure.Details
+                  @auto={{false}}
+                as |details|>
+                  <Notice
+                    class="topology-metrics-notice"
+                    id={{details.id}}
+                    data-test-notice={{prop}}
+                    @type={{if (includes prop (array 'filtered-by-acls' 'no-dependencies'))
+                      'info'
+                      'warning'
+                    }}
+                  as |notice|>
+                    <notice.Header>
+                      <h3>
+                        {{compute (fn route.t 'notice.${prop}.header'
+                          (hash
+                            prop=prop
+                          )
+                        )}}
+                      </h3>
+                    </notice.Header>
+                    {{#if disclosure.expanded}}
+                      <notice.Body>
+                        <p>
+                          {{compute (fn route.t 'notice.${prop}.body'
+                            (hash
+                              prop=prop
+                            )
+                          )}}
+                        </p>
+                      </notice.Body>
+                    {{/if}}
+                    {{#let
+                      (compute (fn route.t 'notice.${prop}.footer'
+                        (hash
+                          route_intentions=(href-to 'dc.services.show.intentions')
+                          prop=prop
+                          htmlSafe=true
+                        )
+                      ))
+                    as |footer|}}
+                      {{#if (and disclosure.expanded (not-eq prop 'filtered-by-acls'))}}
+                        <notice.Footer>
+                          {{footer}}
+                        </notice.Footer>
+                      {{/if}}
+                    {{/let}}
+                  </Notice>
+                </disclosure.Details>
+              {{/if}}
+            {{/each-in}}
+
+            {{! If more than 2 notices are enabled let the user close them }}
+            {{#if (gt noticesEnabled.length 2)}}
+              <disclosure.Action
+                {{on 'click' disclosure.toggle}}
+              >
+              {{compute (fn route.t 'notices.${expanded}'
+                (hash
+                  expanded=(if disclosure.expanded 'close' 'open')
+                )
+              )}}
+              </disclosure.Action>
+            {{/if}}
+
+          {{/let}}
+        {{/let}}
+      </Disclosure>
+
+    </div>
+
+
+    <DataSource
+      @src={{uri '/${partition}/${nspace}/${dc}/ui-config'
+        (hash
+          partition=route.params.partition
+          nspace=route.params.nspace
+          dc=route.params.dc
+        )
+      }}
+    as |config|>
+    {{#if config.data}}
+
+      <TopologyMetrics
+        @nspace={{nspace}}
+        @dc={{dc}}
+        @service={{items.firstObject}}
+        @topology={{topology}}
+
+        @metricsHref={{render-template config.data.dashboard_url_templates.service
+          (hash
+            Datacenter=dc.Name
+            Service=(hash
+              Name=items.firstObject.Name
+              Namespace=(or items.firstObject.Namespace '')
+              Partition=(or items.firstObject.Partition '')
+            )
+          )
+        }}
+        @isRemoteDC={{not dc.Local}}
+        @hasMetricsProvider={{gt config.data.metrics_provider.length 0}}
+        @oncreate={{route-action 'createIntention'}}
+      />
+
+    {{/if}}
+    </DataSource>
+  </div>
+{{/let}}
+    </BlockSlot>
+  </DataLoader>
+</Route>

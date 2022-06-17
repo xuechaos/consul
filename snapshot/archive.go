@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"hash"
 	"io"
+	"io/ioutil"
 	"time"
 
 	"github.com/hashicorp/raft"
@@ -84,7 +85,7 @@ func (hl *hashList) DecodeAndVerify(r io.Reader) error {
 	}
 
 	// Make sure everything we had a hash for was seen.
-	for file, _ := range hl.hashes {
+	for file := range hl.hashes {
 		if _, ok := seen[file]; !ok {
 			return fmt.Errorf("file missing for %q", file)
 		}
@@ -193,8 +194,19 @@ func read(in io.Reader, metadata *raft.SnapshotMeta, snap io.Writer) error {
 
 		switch hdr.Name {
 		case "meta.json":
-			dec := json.NewDecoder(io.TeeReader(archive, metaHash))
-			if err := dec.Decode(&metadata); err != nil {
+			// Previously we used json.Decode to decode the archive stream. There are
+			// edgecases in which it doesn't read all the bytes from the stream, even
+			// though the json object is still being parsed properly. Since we
+			// simultaneously feeded everything to metaHash, our hash ended up being
+			// different than what we calculated when creating the snapshot. Which in
+			// turn made the snapshot verification fail. By explicitly reading the
+			// whole thing first we ensure that we calculate the correct hash
+			// independent of how json.Decode works internally.
+			buf, err := ioutil.ReadAll(io.TeeReader(archive, metaHash))
+			if err != nil {
+				return fmt.Errorf("failed to read snapshot metadata: %v", err)
+			}
+			if err := json.Unmarshal(buf, &metadata); err != nil {
 				return fmt.Errorf("failed to decode snapshot metadata: %v", err)
 			}
 
@@ -211,7 +223,6 @@ func read(in io.Reader, metadata *raft.SnapshotMeta, snap io.Writer) error {
 		default:
 			return fmt.Errorf("unexpected file %q in snapshot", hdr.Name)
 		}
-
 	}
 
 	// Verify all the hashes.

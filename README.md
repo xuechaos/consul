@@ -1,13 +1,26 @@
-# Consul [![Build Status](https://travis-ci.org/hashicorp/consul.svg?branch=master)](https://travis-ci.org/hashicorp/consul) [![Join the chat at https://gitter.im/hashicorp-consul/Lobby](https://badges.gitter.im/hashicorp-consul/Lobby.svg)](https://gitter.im/hashicorp-consul/Lobby?utm_source=badge&utm_medium=badge&utm_campaign=pr-badge&utm_content=badge)
+<h1>
+  <img src="./website/public/img/logo.svg" align="left" height="46px" alt="Consul logo"/>
+  <span>Consul</span>
+</h1>
+
+[![Docker Pulls](https://img.shields.io/docker/pulls/_/consul.svg)](https://hub.docker.com/_/consul)
+[![Go Report Card](https://goreportcard.com/badge/github.com/hashicorp/consul)](https://goreportcard.com/report/github.com/hashicorp/consul)
+
+Consul is a distributed, highly available, and data center aware solution to connect and configure applications across dynamic, distributed infrastructure.
 
 * Website: https://www.consul.io
-* Chat: [Gitter](https://gitter.im/hashicorp-consul/Lobby)
-* Mailing list: [Google Groups](https://groups.google.com/group/consul-tool/)
-
-Consul is a tool for service discovery and configuration. Consul is
-distributed, highly available, and extremely scalable.
+* Tutorials: [HashiCorp Learn](https://learn.hashicorp.com/consul)
+* Forum: [Discuss](https://discuss.hashicorp.com/c/consul)
 
 Consul provides several key features:
+
+* **Multi-Datacenter** - Consul is built to be datacenter aware, and can
+  support any number of regions without complex configuration.
+
+* **Service Mesh/Service Segmentation** - Consul Connect enables secure service-to-service
+  communication with automatic TLS encryption and identity-based authorization. Applications
+  can use sidecar proxies in a service mesh configuration to establish TLS
+  connections for inbound and outbound connections without being aware of Connect at all.
 
 * **Service Discovery** - Consul makes it simple for services to register
   themselves and to discover other services via a DNS or HTTP interface.
@@ -22,66 +35,33 @@ Consul provides several key features:
   dynamic configuration, feature flagging, coordination, leader election and
   more. The simple HTTP API makes it easy to use anywhere.
 
-* **Multi-Datacenter** - Consul is built to be datacenter aware, and can
-  support any number of regions without complex configuration.
+Consul runs on Linux, macOS, FreeBSD, Solaris, and Windows and includes an
+optional [browser based UI](https://demo.consul.io). A commercial version
+called [Consul Enterprise](https://www.hashicorp.com/products/consul) is also
+available.
 
-Consul runs on Linux, Mac OS X, FreeBSD, Solaris, and Windows.
+**Please note**: We take Consul's security and our users' trust very seriously. If you
+believe you have found a security issue in Consul, please [responsibly disclose](https://www.hashicorp.com/security#vulnerability-reporting)
+by contacting us at security@hashicorp.com.
 
 ## Quick Start
 
-An extensive quick start is viewable on the Consul website:
+A few quick start guides are available on the Consul website:
 
-https://www.consul.io/intro/getting-started/install.html
+* **Standalone binary install:** https://learn.hashicorp.com/tutorials/consul/get-started-install
+* **Minikube install:** https://learn.hashicorp.com/tutorials/consul/kubernetes-minikube
+* **Kind install:** https://learn.hashicorp.com/tutorials/consul/kubernetes-kind
+* **Kubernetes install:** https://learn.hashicorp.com/tutorials/consul/kubernetes-deployment-guide
 
 ## Documentation
 
-Full, comprehensive documentation is viewable on the Consul website:
+Full, comprehensive documentation is available on the Consul website:
 
 https://www.consul.io/docs
 
-## Developing Consul
+## Contributing
 
-If you wish to work on Consul itself, you'll first need [Go](https://golang.org)
-installed (version 1.8+ is _required_). Make sure you have Go properly installed,
-including setting up your [GOPATH](https://golang.org/doc/code.html#GOPATH).
-
-Next, clone this repository into `$GOPATH/src/github.com/hashicorp/consul` and
-then just type `make`. In a few moments, you'll have a working `consul` executable:
-
-```
-$ make
-...
-$ bin/consul
-...
-```
-
-*Note: `make` will also place a copy of the binary in the first part of your `$GOPATH`.*
-
-You can run tests by typing `make test`.
-
-If you make any changes to the code, run `make format` in order to automatically
-format the code according to Go standards.
-
-### Building Consul on Windows
-
-Make sure Go 1.8+ is installed on your system and that the Go command is in your
-%PATH%.
-
-For building Consul on Windows, you also need to have MinGW installed.
-[TDM-GCC](http://tdm-gcc.tdragon.net/) is a simple bundle installer which has all
-the required tools for building Consul with MinGW.
-
-Install TDM-GCC and make sure it has been added to your %PATH%.
-
-If all goes well, you should be able to build Consul by running `make.bat` from a
-command prompt.
-
-See also [golang/winstrap](https://github.com/golang/winstrap) and
-[golang/wiki/WindowsBuild](https://github.com/golang/go/wiki/WindowsBuild)
-for more information of how to set up a general Go build environment on Windows
-with MinGW.
-
-## Vendoring
-
-Consul currently uses [govendor](https://github.com/kardianos/govendor) for
-vendoring.
+Thank you for your interest in contributing! Please refer to [CONTRIBUTING.md](https://github.com/hashicorp/consul/blob/main/.github/CONTRIBUTING.md)
+for guidance. For contributions specifically to the browser based UI, please
+refer to the UI's [README.md](https://github.com/hashicorp/consul/blob/main/ui/packages/consul-ui/README.md)
+for guidance.

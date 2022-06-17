@@ -1,0 +1,9 @@
+%progress-native {
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  appearance: none;
+}
+%progress-native::-webkit-progress-bar,
+%progress-native::-webkit-progress-value {
+  display: none;
+}

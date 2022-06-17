@@ -5,17 +5,17 @@ import (
 	"crypto/rand"
 	"fmt"
 	"io"
-	"io/ioutil"
-	"log"
-	"os"
-	"path"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/hashicorp/go-msgpack/codec"
+	"github.com/hashicorp/consul-net-rpc/go-msgpack/codec"
+	"github.com/hashicorp/consul/agent/structs"
+	"github.com/hashicorp/consul/sdk/testutil"
 	"github.com/hashicorp/raft"
+	"github.com/stretchr/testify/require"
 )
 
 // MockFSM is a simple FSM for testing that simply stores its logs in a slice of
@@ -52,8 +52,7 @@ func (m *MockFSM) Restore(in io.ReadCloser) error {
 	m.Lock()
 	defer m.Unlock()
 	defer in.Close()
-	hd := codec.MsgpackHandle{}
-	dec := codec.NewDecoder(in, &hd)
+	dec := codec.NewDecoder(in, structs.MsgpackHandle)
 
 	m.logs = nil
 	return dec.Decode(&m.logs)
@@ -61,8 +60,7 @@ func (m *MockFSM) Restore(in io.ReadCloser) error {
 
 // See raft.SnapshotSink.
 func (m *MockSnapshot) Persist(sink raft.SnapshotSink) error {
-	hd := codec.MsgpackHandle{}
-	enc := codec.NewEncoder(sink, &hd)
+	enc := codec.NewEncoder(sink, structs.MsgpackHandle)
 	if err := enc.Encode(m.logs[:m.maxIndex]); err != nil {
 		sink.Cancel()
 		return err
@@ -126,17 +124,17 @@ func makeRaft(t *testing.T, dir string) (*raft.Raft, *MockFSM) {
 }
 
 func TestSnapshot(t *testing.T) {
-	dir, err := ioutil.TempDir("", "snapshot")
-	if err != nil {
-		t.Fatalf("err: %v", err)
+	if testing.Short() {
+		t.Skip("too slow for testing.Short")
 	}
-	defer os.RemoveAll(dir)
+
+	dir := testutil.TempDir(t, "snapshot")
 
 	// Make a Raft and populate it with some data. We tee everything we
 	// apply off to a buffer for checking post-snapshot.
 	var expected []bytes.Buffer
 	entries := 64 * 1024
-	before, _ := makeRaft(t, path.Join(dir, "before"))
+	before, _ := makeRaft(t, filepath.Join(dir, "before"))
 	defer before.Shutdown()
 	for i := 0; i < entries; i++ {
 		var log bytes.Buffer
@@ -153,7 +151,7 @@ func TestSnapshot(t *testing.T) {
 	}
 
 	// Take a snapshot.
-	logger := log.New(os.Stdout, "", 0)
+	logger := testutil.Logger(t)
 	snap, err := New(logger, before)
 	if err != nil {
 		t.Fatalf("err: %v", err)
@@ -179,7 +177,7 @@ func TestSnapshot(t *testing.T) {
 	}
 
 	// Make a new, independent Raft.
-	after, fsm := makeRaft(t, path.Join(dir, "after"))
+	after, fsm := makeRaft(t, filepath.Join(dir, "after"))
 	defer after.Shutdown()
 
 	// Put some initial data in there that the snapshot should overwrite.
@@ -205,7 +203,7 @@ func TestSnapshot(t *testing.T) {
 	if len(fsm.logs) != len(expected) {
 		t.Fatalf("bad: %d vs. %d", len(fsm.logs), len(expected))
 	}
-	for i, _ := range fsm.logs {
+	for i := range fsm.logs {
 		if !bytes.Equal(fsm.logs[i], expected[i].Bytes()) {
 			t.Fatalf("bad: log %d doesn't match", i)
 		}
@@ -237,15 +235,64 @@ func TestSnapshot_BadVerify(t *testing.T) {
 	}
 }
 
-func TestSnapshot_BadRestore(t *testing.T) {
-	dir, err := ioutil.TempDir("", "snapshot")
-	if err != nil {
-		t.Fatalf("err: %v", err)
+func TestSnapshot_TruncatedVerify(t *testing.T) {
+	if testing.Short() {
+		t.Skip("too slow for testing.Short")
 	}
-	defer os.RemoveAll(dir)
+
+	dir := testutil.TempDir(t, "snapshot")
+
+	// Make a Raft and populate it with some data. We tee everything we
+	// apply off to a buffer for checking post-snapshot.
+	entries := 64 * 1024
+	before, _ := makeRaft(t, filepath.Join(dir, "before"))
+	defer before.Shutdown()
+	for i := 0; i < entries; i++ {
+		var log bytes.Buffer
+		var copy bytes.Buffer
+		both := io.MultiWriter(&log, &copy)
+
+		_, err := io.CopyN(both, rand.Reader, 256)
+		require.NoError(t, err)
+
+		future := before.Apply(log.Bytes(), time.Second)
+		require.NoError(t, future.Error())
+	}
+
+	// Take a snapshot.
+	logger := testutil.Logger(t)
+	snap, err := New(logger, before)
+	require.NoError(t, err)
+	defer snap.Close()
+
+	var data []byte
+	{
+		var buf bytes.Buffer
+		_, err = io.Copy(&buf, snap)
+		require.NoError(t, err)
+		data = buf.Bytes()
+	}
+
+	for _, removeBytes := range []int{200, 16, 8, 4, 2, 1} {
+		t.Run(fmt.Sprintf("truncate %d bytes from end", removeBytes), func(t *testing.T) {
+			// Lop off part of the end.
+			buf := bytes.NewReader(data[0 : len(data)-removeBytes])
+
+			_, err = Verify(buf)
+			require.Error(t, err)
+		})
+	}
+}
+
+func TestSnapshot_BadRestore(t *testing.T) {
+	if testing.Short() {
+		t.Skip("too slow for testing.Short")
+	}
+
+	dir := testutil.TempDir(t, "snapshot")
 
 	// Make a Raft and populate it with some data.
-	before, _ := makeRaft(t, path.Join(dir, "before"))
+	before, _ := makeRaft(t, filepath.Join(dir, "before"))
 	defer before.Shutdown()
 	for i := 0; i < 16*1024; i++ {
 		var log bytes.Buffer
@@ -259,14 +306,14 @@ func TestSnapshot_BadRestore(t *testing.T) {
 	}
 
 	// Take a snapshot.
-	logger := log.New(os.Stdout, "", 0)
+	logger := testutil.Logger(t)
 	snap, err := New(logger, before)
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
 
 	// Make a new, independent Raft.
-	after, fsm := makeRaft(t, path.Join(dir, "after"))
+	after, fsm := makeRaft(t, filepath.Join(dir, "after"))
 	defer after.Shutdown()
 
 	// Put some initial data in there that should not be harmed by the
@@ -300,7 +347,7 @@ func TestSnapshot_BadRestore(t *testing.T) {
 	if len(fsm.logs) != len(expected) {
 		t.Fatalf("bad: %d vs. %d", len(fsm.logs), len(expected))
 	}
-	for i, _ := range fsm.logs {
+	for i := range fsm.logs {
 		if !bytes.Equal(fsm.logs[i], expected[i].Bytes()) {
 			t.Fatalf("bad: log %d doesn't match", i)
 		}

@@ -1,79 +1,64 @@
-## Consul Web UI
+# Consul UI Monorepo
 
-This directory contains the Consul Web UI. Consul contains a built-in
-HTTP server that serves this directory, but any common HTTP server
-is capable of serving it.
+This monorepo contains multiple projects, the UI for Consul and addons and
+packages used by the UI.
 
-It uses JavaScript and [Ember](http://emberjs.com) to communicate with
-the [Consul API](https://www.consul.io/docs/agent/http.html). The basic
-features it provides are:
+This top-level repository provides limited common tasks, such as installation
+and commit assistance.  However, most tasks must be executed from within a
+subproject, e.g. running or testing.
 
-- Service view. A list of your registered services, their
-health and the nodes they run on.
-- Node view. A list of your registered nodes, the services running
-on each and the health of the node.
-- Key/value view and update
+**If you are looking to work on the Consul UI you probably want to read
+the README that is in `./packages/consul-ui/README.md`.**
 
-It's aware of multiple datacenters, so you can get a quick global
-overview before drilling into specific data-centers for detailed
-views.
 
-The UI uses some internal undocumented HTTP APIs to optimize
-performance and usability.
+<!-- START doctoc generated TOC please keep comment here to allow auto update -->
+<!-- DON'T EDIT THIS SECTION, INSTEAD RE-RUN doctoc TO UPDATE -->
+**Table of Contents**  *generated with [DocToc](https://github.com/thlorenz/doctoc)*
 
-### Development
+- [Prerequisites](#prerequisites)
+- [Installation](#installation)
+- [Yarn Commands](#yarn-commands)
+- [Contributing](#contributing)
+  - [Building ToC](#building-toc)
 
-Improvements and bug fixes are welcome and encouraged for the Web UI.
+<!-- END doctoc generated TOC please keep comment here to allow auto update -->
 
-You'll need sass to compile CSS stylesheets. Install that with
-bundler:
+## Prerequisites
 
-    cd ui/
-    bundle
+You will need the following things properly installed on your computer.
 
-Reloading compilation for development:
+* [Git][git]
+* [Node.js][node]
+* [Yarn][yarn] installed globally
+* [Google Chrome][chrome]
+* [Firefox][firefox]
 
-    make watch
+[git]: https://git-scm.com/
+[node]: https://nodejs.org/
+[yarn]: https://classic.yarnpkg.com/lang/en/
+[chrome]: https://google.com/chrome/
+[firefox]: https://firefox.com/
+[yarn-workspaces]: https://classic.yarnpkg.com/en/docs/workspaces/
 
-Consul ships with an HTTP server for the API and UI. By default, when
-you run the agent, it is off. However, if you pass a `-ui-dir` flag
-with a path to this directory, you'll be able to access the UI via the
-Consul HTTP server address, which defaults to `localhost:8500/ui`.
+## Installation
 
-An example of this command, from inside the `ui/` directory, would be:
+* `git clone https://github.com/hashicorp/consul.git` this repository
+* `cd ui`
+* `yarn`
 
-    consul agent -bootstrap -server -data-dir /tmp/ -ui-dir .
+## Yarn Commands
 
-Basic tests can be run by adding the `?test` query parameter to the
-application.
+List of available project commands.  `yarn run <command-name>`
 
-When developing Consul, it's recommended that you use the included
-development configuration.
+| Command             | Description                        |
+|---------------------|------------------------------------|
+| doc:toc             | Re-builds the ToC for this README. |
+| compliance:licenses | Checks that all dependencies have OSS-compatible licenses. |
 
-    consul agent -config-file=development_config.json
+## Contributing
 
-### Releasing
+### Building ToC
 
-`make dist`
-
-The `../pkg/web_ui` folder will contain the files you should use for deployment.
-
-###Acknowledgements
-cog icon by useiconic.com from the [Noun Project](https://thenounproject.com/term/setting/45865/)
-
-### Compiling the UI into the Go binary
-
-The UI is compiled and shipped with the Consul go binary. The generated bindata
-file lives in the `command/agent/bindata_assetfs.go` file and is checked into
-source control. This is useful so that not every Consul developer needs to set
-up bundler etc. To re-generate the file, first follow the compilation steps
-above to build the UI assets into the `pkg/web_ui` folder. With that done, from the
-root of the Consul repo, run:
-
-```
-$ make static-assets
-```
-
-The file will now be refreshed with the current UI data. You can now rebuild the
-Consul binary normally with `make bin` or `make dev`, and see the updated UI
-after re-launching Consul.
+To autogenerate a ToC (table of contents) for this README,
+run `yarn doc:toc`.  Please update the ToC whenever editing the structure
+of README.

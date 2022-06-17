@@ -1,0 +1,24 @@
+<Route
+  @name={{routeName}}
+as |route|>
+  <div class="tab-section">
+  {{#let (flatten (map-by "Tags" route.model.items)) as |tags|}}
+    {{#if (gt tags.length 0) }}
+        <TagList @item={{hash Tags=tags}} />
+    {{else}}
+        <EmptyState>
+          <BlockSlot @name="header">
+            <h2>
+              {{t 'routes.dc.services.show.tags.empty.header'}}
+            </h2>
+          </BlockSlot>
+          <BlockSlot @name="body">
+            {{t 'routes.dc.services.show.tags.empty.body'
+              htmlSafe=true
+            }}
+          </BlockSlot>
+        </EmptyState>
+    {{/if}}
+  {{/let}}
+  </div>
+</Route>

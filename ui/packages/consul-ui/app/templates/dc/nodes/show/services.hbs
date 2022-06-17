@@ -1,0 +1,76 @@
+<Route
+  @name={{routeName}}
+as |route|>
+  {{#let
+
+    (hash
+      value=(or sortBy "Status:asc")
+      change=(action (mut sortBy) value="target.selected")
+    )
+
+    (hash
+      status=(hash
+        value=(if status (split status ',') undefined)
+        change=(action (mut status) value="target.selectedItems")
+      )
+      source=(hash
+        value=(if source (split source ',') undefined)
+        change=(action (mut source) value="target.selectedItems")
+      )
+      searchproperty=(hash
+        value=(if (not-eq searchproperty undefined)
+          (split searchproperty ',')
+          searchProperties
+        )
+        change=(action (mut searchproperty) value="target.selectedItems")
+        default=searchProperties
+      )
+    )
+
+    route.model.item.MeshServiceInstances
+    route.model.item.ProxyServiceInstances
+
+  as |sort filters items proxies|}}
+  <div class="tab-section">
+    {{#if (gt items.length 0) }}
+      <input type="checkbox" id="toolbar-toggle" />
+      <Consul::ServiceInstance::SearchBar
+        @sources={{get (collection items) 'ExternalSources'}}
+        @search={{search}}
+        @onsearch={{action (mut search) value="target.value"}}
+        @searchproperties={{searchProperties}}
+
+        @sort={{sort}}
+
+        @filter={{filters}}
+        />
+      {{/if}}
+      <DataCollection
+        @type="service-instance"
+        @sort={{sort.value}}
+        @filters={{filters}}
+        @search={{search}}
+        @items={{items}}
+      as |collection|>
+        <collection.Collection>
+          <Consul::ServiceInstance::List
+            @node={{route.model.item}}
+            @routeName="dc.services.show"
+            @items={{collection.items}}
+            @proxies={{proxies}}
+          />
+        </collection.Collection>
+        <collection.Empty>
+          <EmptyState>
+            <BlockSlot @name="body">
+              {{t "routes.dc.nodes.show.services.empty"
+                items=items.length
+                htmlSafe=true
+              }}
+            </BlockSlot>
+          </EmptyState>
+        </collection.Empty>
+      </DataCollection>
+  </div>
+  {{/let}}
+</Route>

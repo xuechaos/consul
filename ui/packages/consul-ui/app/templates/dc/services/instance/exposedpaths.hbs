@@ -1,0 +1,24 @@
+<Route
+  @name={{routeName}}
+as |route|>
+{{#let
+  route.model.proxy
+  route.model.meta
+as |item proxy|}}
+  <div class="tab-section">
+  {{#if (gt proxy.ServiceProxy.Expose.Paths.length 0)}}
+    {{t 'routes.dc.services.instance.exposedpaths.intro' htmlSafe=true}}
+    <Consul::ExposedPath::List
+      @items={{proxy.ServiceProxy.Expose.Paths}}
+      @address={{or item.Service.Address item.Node.Address}}
+    />
+  {{else}}
+    <EmptyState>
+      <BlockSlot @name="body">
+        {{t 'routes.dc.services.instance.exposedpaths.empty.body' htmlSafe=true}}
+      </BlockSlot>
+    </EmptyState>
+  {{/if}}
+  </div>
+{{/let}}
+</Route>
