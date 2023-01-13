@@ -36,7 +36,7 @@ require (
 	github.com/hashicorp/go-hclog v0.14.1
 	github.com/hashicorp/go-memdb v1.3.2
 	github.com/hashicorp/go-multierror v1.1.1
-	github.com/hashicorp/go-raftchunking v0.6.2
+	github.com/hashicorp/go-raftchunking v0.7.0
 	github.com/hashicorp/go-retryablehttp v0.6.7
 	github.com/hashicorp/go-sockaddr v1.0.2
 	github.com/hashicorp/go-syslog v1.0.0
@@ -46,7 +46,7 @@ require (
 	github.com/hashicorp/hcl v1.0.0
 	github.com/hashicorp/hil v0.0.0-20200423225030-a18a1cd20038
 	github.com/hashicorp/memberlist v0.3.1
-	github.com/hashicorp/raft v1.3.9
+	github.com/hashicorp/raft v1.3.11
 	github.com/hashicorp/raft-autopilot v0.1.6
 	github.com/hashicorp/raft-boltdb/v2 v2.2.2
 	github.com/hashicorp/serf v0.9.8
@@ -57,13 +57,13 @@ require (
 	github.com/kr/text v0.2.0
 	github.com/miekg/dns v1.1.41
 	github.com/mitchellh/cli v1.1.0
-	github.com/mitchellh/copystructure v1.0.0
+	github.com/mitchellh/copystructure v1.2.0
 	github.com/mitchellh/go-testing-interface v1.14.0
 	github.com/mitchellh/hashstructure v0.0.0-20170609045927-2bca23e0e452
 	github.com/mitchellh/hashstructure/v2 v2.0.2
 	github.com/mitchellh/mapstructure v1.4.1
 	github.com/mitchellh/pointerstructure v1.2.1
-	github.com/mitchellh/reflectwalk v1.0.1
+	github.com/mitchellh/reflectwalk v1.0.2
 	github.com/patrickmn/go-cache v2.1.0+incompatible
 	github.com/pkg/errors v0.9.1
 	github.com/prometheus/client_golang v1.4.0
@@ -81,7 +81,7 @@ require (
 	golang.org/x/time v0.0.0-20200630173020-3af7569d3a1e
 	google.golang.org/genproto v0.0.0-20200623002339-fbb79eadd5eb
 	google.golang.org/grpc v1.37.1
-	google.golang.org/protobuf v1.27.1
+	google.golang.org/protobuf v1.28.1
 	gopkg.in/square/go-jose.v2 v2.5.1
 	gotest.tools/v3 v3.0.3
 	k8s.io/api v0.18.2
