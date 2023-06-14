@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package acl
 
 // ChainedAuthorizer can combine multiple Authorizers into one.
@@ -158,6 +161,22 @@ func (c *ChainedAuthorizer) MeshRead(entCtx *AuthorizerContext) EnforcementDecis
 func (c *ChainedAuthorizer) MeshWrite(entCtx *AuthorizerContext) EnforcementDecision {
 	return c.executeChain(func(authz Authorizer) EnforcementDecision {
 		return authz.MeshWrite(entCtx)
+	})
+}
+
+// PeeringRead determines if the read-only Consul peering functions
+// can be used.
+func (c *ChainedAuthorizer) PeeringRead(entCtx *AuthorizerContext) EnforcementDecision {
+	return c.executeChain(func(authz Authorizer) EnforcementDecision {
+		return authz.PeeringRead(entCtx)
+	})
+}
+
+// PeeringWrite determines if the state-changing Consul peering
+// functions can be used.
+func (c *ChainedAuthorizer) PeeringWrite(entCtx *AuthorizerContext) EnforcementDecision {
+	return c.executeChain(func(authz Authorizer) EnforcementDecision {
+		return authz.PeeringWrite(entCtx)
 	})
 }
 

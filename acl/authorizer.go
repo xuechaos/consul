@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package acl
 
 import (
@@ -49,6 +52,7 @@ const (
 	ResourceQuery     Resource = "query"
 	ResourceService   Resource = "service"
 	ResourceSession   Resource = "session"
+	ResourcePeering   Resource = "peering"
 )
 
 // Authorizer is the interface for policy enforcement.
@@ -112,6 +116,14 @@ type Authorizer interface {
 	// MeshWrite determines if the state-changing Consul mesh
 	// functions can be used.
 	MeshWrite(*AuthorizerContext) EnforcementDecision
+
+	// PeeringRead determines if the read-only Consul peering functions
+	// can be used.
+	PeeringRead(*AuthorizerContext) EnforcementDecision
+
+	// PeeringWrite determines if the stage-changing Consul peering
+	// functions can be used.
+	PeeringWrite(*AuthorizerContext) EnforcementDecision
 
 	// NodeRead checks for permission to read (discover) a given node.
 	NodeRead(string, *AuthorizerContext) EnforcementDecision
@@ -322,6 +334,24 @@ func (a AllowAuthorizer) MeshReadAllowed(ctx *AuthorizerContext) error {
 func (a AllowAuthorizer) MeshWriteAllowed(ctx *AuthorizerContext) error {
 	if a.Authorizer.MeshWrite(ctx) != Allow {
 		return PermissionDeniedByACLUnnamed(a, ctx, ResourceMesh, AccessWrite)
+	}
+	return nil
+}
+
+// PeeringReadAllowed determines if the read-only Consul peering functions
+// can be used.
+func (a AllowAuthorizer) PeeringReadAllowed(ctx *AuthorizerContext) error {
+	if a.Authorizer.PeeringRead(ctx) != Allow {
+		return PermissionDeniedByACLUnnamed(a, ctx, ResourcePeering, AccessRead)
+	}
+	return nil
+}
+
+// PeeringWriteAllowed determines if the state-changing Consul peering
+// functions can be used.
+func (a AllowAuthorizer) PeeringWriteAllowed(ctx *AuthorizerContext) error {
+	if a.Authorizer.PeeringWrite(ctx) != Allow {
+		return PermissionDeniedByACLUnnamed(a, ctx, ResourcePeering, AccessWrite)
 	}
 	return nil
 }
@@ -540,6 +570,13 @@ func Enforce(authz Authorizer, rsc Resource, segment string, access string, ctx 
 		case "write":
 			return authz.SessionWrite(segment, ctx), nil
 		}
+	case ResourcePeering:
+		switch lowerAccess {
+		case "read":
+			return authz.PeeringRead(ctx), nil
+		case "write":
+			return authz.PeeringWrite(ctx), nil
+		}
 	default:
 		if processed, decision, err := enforceEnterprise(authz, rsc, segment, lowerAccess, ctx); processed {
 			return decision, err
@@ -552,8 +589,8 @@ func Enforce(authz Authorizer, rsc Resource, segment string, access string, ctx 
 
 // NewAuthorizerFromRules is a convenience function to invoke NewPolicyFromSource followed by NewPolicyAuthorizer with
 // the parse policy.
-func NewAuthorizerFromRules(rules string, syntax SyntaxVersion, conf *Config, meta *EnterprisePolicyMeta) (Authorizer, error) {
-	policy, err := NewPolicyFromSource(rules, syntax, conf, meta)
+func NewAuthorizerFromRules(rules string, conf *Config, meta *EnterprisePolicyMeta) (Authorizer, error) {
+	policy, err := NewPolicyFromSource(rules, conf, meta)
 	if err != nil {
 		return nil, err
 	}

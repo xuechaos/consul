@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package proxy
 
 import (
@@ -232,7 +235,7 @@ func LookupProxyIDForSidecar(client *api.Client, sidecarFor string) (string, err
 	var proxyIDs []string
 	for _, svc := range svcs {
 		if svc.Kind == api.ServiceKindConnectProxy && svc.Proxy != nil &&
-			strings.ToLower(svc.Proxy.DestinationServiceID) == sidecarFor {
+			strings.EqualFold(svc.Proxy.DestinationServiceID, sidecarFor) {
 			proxyIDs = append(proxyIDs, svc.ID)
 		}
 	}

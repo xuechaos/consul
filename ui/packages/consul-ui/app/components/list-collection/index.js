@@ -1,3 +1,8 @@
+/**
+ * Copyright (c) HashiCorp, Inc.
+ * SPDX-License-Identifier: MPL-2.0
+ */
+
 import { inject as service } from '@ember/service';
 import { computed, get, set } from '@ember/object';
 import Component from 'ember-collection/components/ember-collection';
@@ -13,27 +18,27 @@ export default Component.extend(Slotted, {
   cellHeight: 70,
   checked: null,
   scroll: 'virtual',
-  init: function() {
+  init: function () {
     this._super(...arguments);
     this.columns = [100];
     this.guid = this.dom.guid(this);
   },
-  didInsertElement: function() {
+  didInsertElement: function () {
     this._super(...arguments);
     this.$element = this.dom.element(`#${this.guid}`);
     if (this.scroll === 'virtual') {
       this.actions.resize.apply(this, [{ target: this.dom.viewport() }]);
     }
   },
-  didReceiveAttrs: function() {
+  didReceiveAttrs: function () {
     this._super(...arguments);
     this._cellLayout = this['cell-layout'] = new PercentageColumns(
       get(this, 'items.length'),
-      get(this, 'columns'),
-      get(this, 'cellHeight')
+      this.columns,
+      this.cellHeight
     );
     const o = this;
-    this['cell-layout'].formatItemStyle = function(itemIndex) {
+    this['cell-layout'].formatItemStyle = function (itemIndex) {
       let style = formatItemStyle.apply(this, arguments);
       if (o.checked === itemIndex) {
         style = `${style};z-index: 1`;
@@ -41,19 +46,19 @@ export default Component.extend(Slotted, {
       return style;
     };
   },
-  style: computed('height', function() {
+  style: computed('height', function () {
     if (this.scroll !== 'virtual') {
       return {};
     }
     return {
-      height: get(this, 'height'),
+      height: this.height,
     };
   }),
   actions: {
-    resize: function(e) {
+    resize: function (e) {
       // TODO: This top part is very similar to resize in tabular-collection
       // see if it make sense to DRY out
-      const dom = get(this, 'dom');
+      const dom = this.dom;
       const $footer = dom.element('footer[role="contentinfo"]');
       if ($footer) {
         const border = 1;
@@ -65,11 +70,11 @@ export default Component.extend(Slotted, {
         this.updateScrollPosition();
       }
     },
-    click: function(e) {
+    click: function (e) {
       return this.dom.clickFirstAnchor(e, '.list-collection > ul > li');
     },
-    change: function(index, e = {}) {
-      if (e.target.checked && index !== get(this, 'checked')) {
+    change: function (index, e = {}) {
+      if (e.target.checked && index !== this.checked) {
         set(this, 'checked', parseInt(index));
         this.$row = this.dom.closest('li', e.target);
         this.$row.style.zIndex = 1;

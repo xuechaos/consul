@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package acl
 
 type policyRulesMergeContext struct {
@@ -10,6 +13,7 @@ type policyRulesMergeContext struct {
 	keyRules                 map[string]*KeyRule
 	keyPrefixRules           map[string]*KeyRule
 	meshRule                 string
+	peeringRule              string
 	nodeRules                map[string]*NodeRule
 	nodePrefixRules          map[string]*NodeRule
 	operatorRule             string
@@ -33,6 +37,7 @@ func (p *policyRulesMergeContext) init() {
 	p.keyRules = make(map[string]*KeyRule)
 	p.keyPrefixRules = make(map[string]*KeyRule)
 	p.meshRule = ""
+	p.peeringRule = ""
 	p.nodeRules = make(map[string]*NodeRule)
 	p.nodePrefixRules = make(map[string]*NodeRule)
 	p.operatorRule = ""
@@ -119,10 +124,6 @@ func (p *policyRulesMergeContext) merge(policy *PolicyRules) {
 		}
 	}
 
-	if takesPrecedenceOver(policy.Mesh, p.meshRule) {
-		p.meshRule = policy.Mesh
-	}
-
 	for _, np := range policy.Nodes {
 		update := true
 		if permission, found := p.nodeRules[np.Name]; found {
@@ -143,6 +144,14 @@ func (p *policyRulesMergeContext) merge(policy *PolicyRules) {
 		if update {
 			p.nodePrefixRules[np.Name] = np
 		}
+	}
+
+	if takesPrecedenceOver(policy.Mesh, p.meshRule) {
+		p.meshRule = policy.Mesh
+	}
+
+	if takesPrecedenceOver(policy.Peering, p.peeringRule) {
+		p.peeringRule = policy.Peering
 	}
 
 	if takesPrecedenceOver(policy.Operator, p.operatorRule) {
@@ -235,6 +244,7 @@ func (p *policyRulesMergeContext) fill(merged *PolicyRules) {
 	merged.Keyring = p.keyringRule
 	merged.Operator = p.operatorRule
 	merged.Mesh = p.meshRule
+	merged.Peering = p.peeringRule
 
 	// All the for loop appends are ugly but Go doesn't have a way to get
 	// a slice of all values within a map so this is necessary

@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package state
 
 import (
@@ -41,12 +44,7 @@ func kvsTableSchema() *memdb.TableSchema {
 }
 
 // indexFromIDValue creates an index key from any struct that implements singleValueID
-func indexFromIDValue(raw interface{}) ([]byte, error) {
-	e, ok := raw.(singleValueID)
-	if !ok {
-		return nil, fmt.Errorf("unexpected type %T, does not implement singleValueID", raw)
-	}
-
+func indexFromIDValue(e singleValueID) ([]byte, error) {
 	v := e.IDValue()
 	if v == "" {
 		return nil, errMissingValueForIndex

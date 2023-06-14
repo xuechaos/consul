@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package stream
 
 // eventSnapshot represents the state of memdb for a given topic and key at some
@@ -34,6 +37,16 @@ func (s *eventSnapshot) appendAndSplice(req SubscribeRequest, fn SnapshotFunc, t
 	if err != nil {
 		s.buffer.AppendItem(&bufferItem{Err: err})
 		return
+	}
+	// If the SnapshotFunc returned a zero index but no error, it is likely because
+	// the resource doesn't exist yet. We don't want to surface this to subscribers
+	// though, because some (e.g. submatview.Materializer) assume zero isn't valid
+	// and will block/wait to get a higher index.
+	//
+	// Instead, we return 1, which is safe because (due to Raft's boostrapping) it
+	// will never conflict with real user data.
+	if idx == 0 {
+		idx = 1
 	}
 	s.buffer.Append([]Event{{
 		Topic:   req.Topic,

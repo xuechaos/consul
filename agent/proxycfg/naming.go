@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package proxycfg
 
 import (
@@ -6,6 +9,8 @@ import (
 	"github.com/hashicorp/consul/acl"
 	"github.com/hashicorp/consul/agent/structs"
 )
+
+type PeerName = string
 
 type UpstreamID struct {
 	Type       string
@@ -32,7 +37,16 @@ func NewUpstreamID(u *structs.Upstream) UpstreamID {
 	return id
 }
 
-// TODO(peering): confirm we don't need peername here
+func NewUpstreamIDFromPeeredServiceName(psn structs.PeeredServiceName) UpstreamID {
+	id := UpstreamID{
+		Name:           psn.ServiceName.Name,
+		EnterpriseMeta: psn.ServiceName.EnterpriseMeta,
+		Peer:           psn.Peer,
+	}
+	id.normalize()
+	return id
+}
+
 func NewUpstreamIDFromServiceName(sn structs.ServiceName) UpstreamID {
 	id := UpstreamID{
 		Name:           sn.Name,
@@ -52,22 +66,29 @@ func NewUpstreamIDFromServiceID(sid structs.ServiceID) UpstreamID {
 	return id
 }
 
-// TODO(peering): confirm we don't need peername here
 func NewUpstreamIDFromTargetID(tid string) UpstreamID {
-	// Drop the leading subset if one is present in the target ID.
-	separators := strings.Count(tid, ".")
-	if separators > 3 {
-		prefix := tid[:strings.Index(tid, ".")+1]
-		tid = strings.TrimPrefix(tid, prefix)
+	var id UpstreamID
+	split := strings.Split(tid, ".")
+
+	switch {
+	case split[len(split)-2] == "external":
+		id = UpstreamID{
+			Name:           split[0],
+			EnterpriseMeta: acl.NewEnterpriseMetaWithPartition(split[2], split[1]),
+			Peer:           split[4],
+		}
+	case len(split) == 5:
+		// Drop the leading subset if one is present in the target ID.
+		split = split[1:]
+		fallthrough
+	default:
+		id = UpstreamID{
+			Name:           split[0],
+			EnterpriseMeta: acl.NewEnterpriseMetaWithPartition(split[2], split[1]),
+			Datacenter:     split[3],
+		}
 	}
 
-	split := strings.SplitN(tid, ".", 4)
-
-	id := UpstreamID{
-		Name:           split[0],
-		EnterpriseMeta: acl.NewEnterpriseMetaWithPartition(split[2], split[1]),
-		Datacenter:     split[3],
-	}
 	id.normalize()
 	return id
 }
@@ -161,4 +182,12 @@ func UpstreamsToMap(us structs.Upstreams) map[UpstreamID]*structs.Upstream {
 		upstreamMap[NewUpstreamID(&u)] = &u
 	}
 	return upstreamMap
+}
+
+func NewWildcardUID(entMeta *acl.EnterpriseMeta) UpstreamID {
+	wildcardSID := structs.NewServiceID(
+		structs.WildcardSpecifier,
+		entMeta.WithWildcardNamespace(),
+	)
+	return NewUpstreamIDFromServiceID(wildcardSID)
 }

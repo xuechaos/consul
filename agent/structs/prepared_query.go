@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package structs
 
 import (
@@ -10,9 +13,9 @@ import (
 	"github.com/hashicorp/consul/types"
 )
 
-// QueryDatacenterOptions sets options about how we fail over if there are no
+// QueryFailoverOptions sets options about how we fail over if there are no
 // healthy nodes in the local datacenter.
-type QueryDatacenterOptions struct {
+type QueryFailoverOptions struct {
 	// NearestN is set to the number of remote datacenters to try, based on
 	// network coordinates.
 	NearestN int
@@ -21,6 +24,42 @@ type QueryDatacenterOptions struct {
 	// never try a datacenter multiple times, so those are subtracted from
 	// this list before proceeding.
 	Datacenters []string
+
+	// Targets is a fixed list of datacenters and peers to try. This field cannot
+	// be populated with NearestN or Datacenters.
+	Targets []QueryFailoverTarget
+}
+
+// AsTargets either returns Targets as is or Datacenters converted into
+// Targets.
+func (f *QueryFailoverOptions) AsTargets() []QueryFailoverTarget {
+	if dcs := f.Datacenters; len(dcs) > 0 {
+		var targets []QueryFailoverTarget
+		for _, dc := range dcs {
+			targets = append(targets, QueryFailoverTarget{Datacenter: dc})
+		}
+		return targets
+	}
+
+	return f.Targets
+}
+
+// IsEmpty returns true if the QueryFailoverOptions are empty (not set), false otherwise
+func (f *QueryFailoverOptions) IsEmpty() bool {
+	if f == nil || (f.NearestN == 0 && len(f.Datacenters) == 0 && len(f.Targets) == 0) {
+		return true
+	}
+	return false
+}
+
+type QueryFailoverTarget struct {
+	// Peer specifies a peer to try during failover.
+	Peer string
+
+	// Datacenter specifies a datacenter to try during failover.
+	Datacenter string
+
+	acl.EnterpriseMeta
 }
 
 // QueryDNSOptions controls settings when query results are served over DNS.
@@ -35,9 +74,14 @@ type ServiceQuery struct {
 	// Service is the service to query.
 	Service string
 
+	// SamenessGroup specifies a sameness group to query. The first member of the Sameness Group will
+	// be targeted first on PQ execution and subsequent members will be targeted during failover scenarios.
+	// This field is mutually exclusive with Failover.
+	SamenessGroup string
+
 	// Failover controls what we do if there are no healthy nodes in the
 	// local datacenter.
-	Failover QueryDatacenterOptions
+	Failover QueryFailoverOptions
 
 	// If OnlyPassing is true then we will only include nodes with passing
 	// health checks (critical AND warning checks will cause a node to be
@@ -79,9 +123,9 @@ type ServiceQuery struct {
 	// should be directly next to their services so this isn't an issue.
 	Connect bool
 
-	// If not empty, PeerName represents the peer that the service
+	// If not empty, Peer represents the peer that the service
 	// was imported from.
-	PeerName string
+	Peer string
 
 	// EnterpriseMeta is the embedded enterprise metadata
 	acl.EnterpriseMeta `hcl:",squash" mapstructure:",squash"`
@@ -322,6 +366,9 @@ type PreparedQueryExecuteResponse struct {
 
 	// Datacenter is the datacenter that these results came from.
 	Datacenter string
+
+	// PeerName specifies the cluster peer that these results came from.
+	PeerName string
 
 	// Failovers is a count of how many times we had to query a remote
 	// datacenter.

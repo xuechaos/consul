@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package discoverychain
 
 import (
@@ -8,9 +11,11 @@ import (
 	"github.com/mitchellh/hashstructure"
 	"github.com/mitchellh/mapstructure"
 
+	"github.com/hashicorp/consul/acl"
 	"github.com/hashicorp/consul/agent/configentry"
 	"github.com/hashicorp/consul/agent/connect"
 	"github.com/hashicorp/consul/agent/structs"
+	"github.com/hashicorp/consul/proto/private/pbpeering"
 )
 
 type CompileRequest struct {
@@ -39,6 +44,11 @@ type CompileRequest struct {
 	OverrideConnectTimeout time.Duration
 
 	Entries *configentry.DiscoveryChainSet
+
+	// AutoVirtualIPs and ManualVirtualIPs are lists of IPs associated with
+	// the service.
+	AutoVirtualIPs   []string
+	ManualVirtualIPs []string
 }
 
 // Compile assembles a discovery chain in the form of a graph of nodes using
@@ -93,6 +103,8 @@ func Compile(req CompileRequest) (*structs.CompiledDiscoveryChain, error) {
 		overrideProtocol:       req.OverrideProtocol,
 		overrideConnectTimeout: req.OverrideConnectTimeout,
 		entries:                entries,
+		autoVirtualIPs:         req.AutoVirtualIPs,
+		manualVirtualIPs:       req.ManualVirtualIPs,
 
 		resolvers:     make(map[structs.ServiceID]*structs.ServiceResolverConfigEntry),
 		splitterNodes: make(map[string]*structs.DiscoveryGraphNode),
@@ -134,6 +146,11 @@ type compiler struct {
 	// This is an INPUT field.
 	entries *configentry.DiscoveryChainSet
 
+	// autoVirtualIPs and manualVirtualIPs are lists of IPs associated with
+	// the service.
+	autoVirtualIPs   []string
+	manualVirtualIPs []string
+
 	// resolvers is initially seeded by copying the provided entries.Resolvers
 	// map and default resolvers are added as they are needed.
 	resolvers map[structs.ServiceID]*structs.ServiceResolverConfigEntry
@@ -166,6 +183,12 @@ type compiler struct {
 	//
 	// This is an OUTPUT field.
 	serviceMeta map[string]string
+
+	// envoyExtensions contains the Envoy Extensions configured through service defaults or proxy defaults config
+	// entries for this discovery chain.
+	//
+	// This is an OUTPUT field.
+	envoyExtensions []structs.EnvoyExtension
 
 	// startNode is computed inside of assembleChain()
 	//
@@ -337,9 +360,12 @@ func (c *compiler) compile() (*structs.CompiledDiscoveryChain, error) {
 		CustomizationHash: customizationHash,
 		Protocol:          c.protocol,
 		ServiceMeta:       c.serviceMeta,
+		EnvoyExtensions:   c.envoyExtensions,
 		StartNode:         c.startNode,
 		Nodes:             c.nodes,
 		Targets:           c.loadedTargets,
+		AutoVirtualIPs:    c.autoVirtualIPs,
+		ManualVirtualIPs:  c.manualVirtualIPs,
 	}, nil
 }
 
@@ -370,7 +396,6 @@ func (c *compiler) determineIfDefaultChain() bool {
 	}
 
 	target := c.loadedTargets[node.Resolver.Target]
-
 	return target.Service == c.serviceName && target.Namespace == c.evaluateInNamespace && target.Partition == c.evaluateInPartition
 }
 
@@ -554,15 +579,23 @@ func (c *compiler) assembleChain() error {
 
 	sid := structs.NewServiceID(c.serviceName, c.GetEnterpriseMeta())
 
-	// Extract the service meta for the service named by this discovery chain.
+	// Extract extensions from proxy defaults.
+	proxyDefaults := c.entries.GetProxyDefaults(c.GetEnterpriseMeta().PartitionOrDefault())
+	if proxyDefaults != nil {
+		c.envoyExtensions = proxyDefaults.EnvoyExtensions
+	}
+
+	// Extract the service meta for the service named by this discovery chain and add extensions from the service
+	// defaults.
 	if serviceDefault := c.entries.GetService(sid); serviceDefault != nil {
 		c.serviceMeta = serviceDefault.GetMeta()
+		c.envoyExtensions = append(c.envoyExtensions, serviceDefault.EnvoyExtensions...)
 	}
 
 	// Check for short circuit path.
 	if len(c.resolvers) == 0 && c.entries.IsChainEmpty() {
 		// Materialize defaults and cache.
-		c.resolvers[sid] = newDefaultServiceResolver(sid)
+		c.resolvers[sid] = c.newDefaultServiceResolver(sid, "")
 	}
 
 	// The only router we consult is the one for the service name at the top of
@@ -576,7 +609,10 @@ func (c *compiler) assembleChain() error {
 	if router == nil {
 		// If no router is configured, move on down the line to the next hop of
 		// the chain.
-		node, err := c.getSplitterOrResolverNode(c.newTarget(c.serviceName, "", "", "", ""))
+		node, err := c.getSplitterOrResolverNode(c.newTarget(structs.DiscoveryTargetOpts{
+			Service: c.serviceName,
+		}))
+
 		if err != nil {
 			return err
 		}
@@ -626,11 +662,20 @@ func (c *compiler) assembleChain() error {
 		)
 		if dest.ServiceSubset == "" {
 			node, err = c.getSplitterOrResolverNode(
-				c.newTarget(svc, "", destNamespace, destPartition, ""),
-			)
+				c.newTarget(structs.DiscoveryTargetOpts{
+					Service:   svc,
+					Namespace: destNamespace,
+					Partition: destPartition,
+				},
+				))
 		} else {
 			node, err = c.getResolverNode(
-				c.newTarget(svc, dest.ServiceSubset, destNamespace, destPartition, ""),
+				c.newTarget(structs.DiscoveryTargetOpts{
+					Service:       svc,
+					ServiceSubset: dest.ServiceSubset,
+					Namespace:     destNamespace,
+					Partition:     destPartition,
+				}),
 				false,
 			)
 		}
@@ -642,7 +687,12 @@ func (c *compiler) assembleChain() error {
 
 	// If we have a router, we'll add a catch-all route at the end to send
 	// unmatched traffic to the next hop in the chain.
-	defaultDestinationNode, err := c.getSplitterOrResolverNode(c.newTarget(router.Name, "", router.NamespaceOrDefault(), router.PartitionOrDefault(), ""))
+	opts := structs.DiscoveryTargetOpts{
+		Service:   router.Name,
+		Namespace: router.NamespaceOrDefault(),
+		Partition: router.PartitionOrDefault(),
+	}
+	defaultDestinationNode, err := c.getSplitterOrResolverNode(c.newTarget(opts))
 	if err != nil {
 		return err
 	}
@@ -674,26 +724,52 @@ func newDefaultServiceRoute(serviceName, namespace, partition string) *structs.S
 	}
 }
 
-func (c *compiler) newTarget(service, serviceSubset, namespace, partition, datacenter string) *structs.DiscoveryTarget {
-	if service == "" {
+func (c *compiler) newTarget(opts structs.DiscoveryTargetOpts) *structs.DiscoveryTarget {
+	if opts.Service == "" {
 		panic("newTarget called with empty service which makes no sense")
 	}
 
-	t := structs.NewDiscoveryTarget(
-		service,
-		serviceSubset,
-		defaultIfEmpty(namespace, c.evaluateInNamespace),
-		defaultIfEmpty(partition, c.evaluateInPartition),
-		defaultIfEmpty(datacenter, c.evaluateInDatacenter),
-	)
+	if opts.Peer == "" {
+		opts.Datacenter = defaultIfEmpty(opts.Datacenter, c.evaluateInDatacenter)
+		opts.Namespace = defaultIfEmpty(opts.Namespace, c.evaluateInNamespace)
+		opts.Partition = defaultIfEmpty(opts.Partition, c.evaluateInPartition)
+	} else {
+		// Don't allow Peer and Datacenter.
+		opts.Datacenter = ""
+		// Since discovery targets (for peering) are ONLY used to query the catalog, and
+		// not to generate the SNI it is more correct to switch this to the calling-side
+		// of the peering's partition as that matches where the replicated data is stored
+		// in the catalog. This is done to simplify the usage of peer targets in both
+		// the xds and proxycfg packages.
+		//
+		// The peer info data attached to service instances will have the embedded opaque
+		// SNI/SAN information generated by the remote side and that will have the
+		// OTHER partition properly specified.
+		opts.Partition = acl.PartitionOrDefault(c.evaluateInPartition)
+		// Default to "default" rather than c.evaluateInNamespace.
+		// Note that the namespace is not swapped out, because it should
+		// always match the value in the remote cluster (and shouldn't
+		// have been changed anywhere).
+		opts.Namespace = acl.NamespaceOrDefault(opts.Namespace)
+	}
 
-	// Set default connect SNI. This will be overridden later if the service
-	// has an explicit SNI value configured in service-defaults.
-	t.SNI = connect.TargetSNI(t, c.evaluateInTrustDomain)
+	t := structs.NewDiscoveryTarget(opts)
 
-	// Use the same representation for the name. This will NOT be overridden
-	// later.
-	t.Name = t.SNI
+	// We don't have the peer's trust domain yet so we can't construct the SNI.
+	if opts.Peer == "" {
+		// Set default connect SNI. This will be overridden later if the service
+		// has an explicit SNI value configured in service-defaults.
+		t.SNI = connect.TargetSNI(t, c.evaluateInTrustDomain)
+
+		// Use the same representation for the name. This will NOT be overridden
+		// later.
+		t.Name = t.SNI
+	} else {
+		peer := c.entries.Peers[opts.Peer]
+		if peer != nil && peer.Remote != nil {
+			t.Locality = pbpeering.LocalityToStructs(peer.Remote.Locality)
+		}
+	}
 
 	prev, ok := c.loadedTargets[t.ID]
 	if ok {
@@ -703,34 +779,30 @@ func (c *compiler) newTarget(service, serviceSubset, namespace, partition, datac
 	return t
 }
 
-func (c *compiler) rewriteTarget(t *structs.DiscoveryTarget, service, serviceSubset, partition, namespace, datacenter string) *structs.DiscoveryTarget {
-	var (
-		service2       = t.Service
-		serviceSubset2 = t.ServiceSubset
-		partition2     = t.Partition
-		namespace2     = t.Namespace
-		datacenter2    = t.Datacenter
-	)
+func (c *compiler) rewriteTarget(t *structs.DiscoveryTarget, opts structs.DiscoveryTargetOpts) *structs.DiscoveryTarget {
+	mergedOpts := t.ToDiscoveryTargetOpts()
 
-	if service != "" && service != service2 {
-		service2 = service
+	if opts.Service != "" && opts.Service != mergedOpts.Service {
+		mergedOpts.Service = opts.Service
 		// Reset the chosen subset if we reference a service other than our own.
-		serviceSubset2 = ""
+		mergedOpts.ServiceSubset = ""
 	}
-	if serviceSubset != "" {
-		serviceSubset2 = serviceSubset
+	if opts.ServiceSubset != "" {
+		mergedOpts.ServiceSubset = opts.ServiceSubset
 	}
-	if partition != "" {
-		partition2 = partition
+	if opts.Partition != "" {
+		mergedOpts.Partition = opts.Partition
 	}
-	if namespace != "" {
-		namespace2 = namespace
+	// Only use explicit Namespace with Peer
+	if opts.Namespace != "" || opts.Peer != "" {
+		mergedOpts.Namespace = opts.Namespace
 	}
-	if datacenter != "" {
-		datacenter2 = datacenter
+	if opts.Datacenter != "" {
+		mergedOpts.Datacenter = opts.Datacenter
 	}
+	mergedOpts.Peer = opts.Peer
 
-	return c.newTarget(service2, serviceSubset2, namespace2, partition2, datacenter2)
+	return c.newTarget(mergedOpts)
 }
 
 func (c *compiler) getSplitterOrResolverNode(target *structs.DiscoveryTarget) (*structs.DiscoveryGraphNode, error) {
@@ -803,10 +875,13 @@ func (c *compiler) getSplitterNode(sid structs.ServiceID) (*structs.DiscoveryGra
 			// fall through to group-resolver
 		}
 
-		node, err := c.getResolverNode(
-			c.newTarget(splitID.ID, split.ServiceSubset, splitID.NamespaceOrDefault(), splitID.PartitionOrDefault(), ""),
-			false,
-		)
+		opts := structs.DiscoveryTargetOpts{
+			Service:       splitID.ID,
+			ServiceSubset: split.ServiceSubset,
+			Namespace:     splitID.NamespaceOrDefault(),
+			Partition:     splitID.PartitionOrDefault(),
+		}
+		node, err := c.getResolverNode(c.newTarget(opts), false)
 		if err != nil {
 			return nil, err
 		}
@@ -847,15 +922,21 @@ RESOLVE_AGAIN:
 
 	targetID := target.ServiceID()
 
-	if err := c.recordServiceProtocol(targetID); err != nil {
-		return nil, err
+	// Only validate protocol if it is not a peered service.
+	// TODO: Add in remote peer protocol validation when building a chain.
+	// This likely would require querying the imported services, which
+	// shouldn't belong in the discovery chain compilation here.
+	if target.Peer == "" {
+		if err := c.recordServiceProtocol(targetID); err != nil {
+			return nil, err
+		}
 	}
 
 	// Fetch the config entry.
 	resolver, ok := c.resolvers[targetID]
 	if !ok {
 		// Materialize defaults and cache.
-		resolver = newDefaultServiceResolver(targetID)
+		resolver = c.newDefaultServiceResolver(targetID, target.Peer)
 		c.resolvers[targetID] = resolver
 	}
 
@@ -876,16 +957,13 @@ RESOLVE_AGAIN:
 	//
 	// TODO(rb): What about a redirected subset reference? (web/v2, but web redirects to alt/"")
 
-	if resolver.Redirect != nil {
+	// Redirects to sameness groups are technically failovers.
+	if resolver.Redirect != nil && resolver.Redirect.SamenessGroup == "" {
 		redirect := resolver.Redirect
 
 		redirectedTarget := c.rewriteTarget(
 			target,
-			redirect.Service,
-			redirect.ServiceSubset,
-			redirect.Partition,
-			redirect.Namespace,
-			redirect.Datacenter,
+			redirect.ToDiscoveryTargetOpts(),
 		)
 		if redirectedTarget.ID != target.ID {
 			target = redirectedTarget
@@ -895,14 +973,9 @@ RESOLVE_AGAIN:
 
 	// Handle default subset.
 	if target.ServiceSubset == "" && resolver.DefaultSubset != "" {
-		target = c.rewriteTarget(
-			target,
-			"",
-			resolver.DefaultSubset,
-			"",
-			"",
-			"",
-		)
+		target = c.rewriteTarget(target, structs.DiscoveryTargetOpts{
+			ServiceSubset: resolver.DefaultSubset,
+		})
 		goto RESOLVE_AGAIN
 	}
 
@@ -939,8 +1012,22 @@ RESOLVE_AGAIN:
 			Default:        resolver.IsDefault(),
 			Target:         target.ID,
 			ConnectTimeout: connectTimeout,
+			RequestTimeout: resolver.RequestTimeout,
 		},
 		LoadBalancer: resolver.LoadBalancer,
+	}
+
+	proxyDefault := c.entries.GetProxyDefaults(targetID.PartitionOrDefault())
+
+	// Only set PrioritizeByLocality for targets in the same partition.
+	if target.Partition == c.evaluateInPartition && target.Peer == "" {
+		if resolver.PrioritizeByLocality != nil {
+			target.PrioritizeByLocality = resolver.PrioritizeByLocality.ToDiscovery()
+		}
+
+		if target.PrioritizeByLocality == nil && proxyDefault != nil {
+			target.PrioritizeByLocality = proxyDefault.PrioritizeByLocality.ToDiscovery()
+		}
 	}
 
 	target.Subset = resolver.Subsets[target.ServiceSubset]
@@ -989,10 +1076,16 @@ RESOLVE_AGAIN:
 		// Default mesh gateway settings
 		if serviceDefault := c.entries.GetService(targetID); serviceDefault != nil {
 			target.MeshGateway = serviceDefault.MeshGateway
+			target.TransparentProxy.DialedDirectly = serviceDefault.TransparentProxy.DialedDirectly
 		}
 		proxyDefault := c.entries.GetProxyDefaults(targetID.PartitionOrDefault())
-		if proxyDefault != nil && target.MeshGateway.Mode == structs.MeshGatewayModeDefault {
-			target.MeshGateway.Mode = proxyDefault.MeshGateway.Mode
+		if proxyDefault != nil {
+			if target.MeshGateway.Mode == structs.MeshGatewayModeDefault {
+				target.MeshGateway.Mode = proxyDefault.MeshGateway.Mode
+			}
+			if !target.TransparentProxy.DialedDirectly {
+				target.TransparentProxy.DialedDirectly = proxyDefault.TransparentProxy.DialedDirectly
+			}
 		}
 
 		if c.overrideMeshGateway.Mode != structs.MeshGatewayModeDefault {
@@ -1018,6 +1111,24 @@ RESOLVE_AGAIN:
 	// reasonably if there is some sort of graph loop below.
 	c.recordNode(node)
 
+	var err error
+	// Determine which failover definitions apply.
+	var failoverTargets []*structs.DiscoveryTarget
+	var failoverPolicy *structs.ServiceResolverFailoverPolicy
+
+	if proxyDefault != nil {
+		failoverPolicy = proxyDefault.FailoverPolicy
+	}
+
+	if resolver.Redirect != nil && resolver.Redirect.SamenessGroup != "" {
+		opts := structs.MergeDiscoveryTargetOpts(resolver.ToSamenessDiscoveryTargetOpts(),
+			resolver.Redirect.ToDiscoveryTargetOpts())
+		failoverTargets, err = c.makeSamenessGroupFailover(target, opts, resolver.Redirect.SamenessGroup)
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	if len(resolver.Failover) > 0 {
 		f := resolver.Failover
 
@@ -1027,63 +1138,113 @@ RESOLVE_AGAIN:
 			failover, ok = f["*"]
 		}
 
-		if ok {
-			// Determine which failover definitions apply.
-			var failoverTargets []*structs.DiscoveryTarget
-			if len(failover.Datacenters) > 0 {
-				for _, dc := range failover.Datacenters {
-					// Rewrite the target as per the failover policy.
-					failoverTarget := c.rewriteTarget(
-						target,
-						failover.Service,
-						failover.ServiceSubset,
-						target.Partition,
-						failover.Namespace,
-						dc,
-					)
-					if failoverTarget.ID != target.ID { // don't failover to yourself
-						failoverTargets = append(failoverTargets, failoverTarget)
-					}
-				}
-			} else {
+		if !ok {
+			return node, nil
+		}
+
+		if failover.Policy != nil {
+			failoverPolicy = failover.Policy
+		}
+
+		if len(failover.Datacenters) > 0 {
+			opts := failover.ToDiscoveryTargetOpts()
+			for _, dc := range failover.Datacenters {
 				// Rewrite the target as per the failover policy.
-				failoverTarget := c.rewriteTarget(
-					target,
-					failover.Service,
-					failover.ServiceSubset,
-					target.Partition,
-					failover.Namespace,
-					"",
-				)
+				opts.Datacenter = dc
+				failoverTarget := c.rewriteTarget(target, opts)
 				if failoverTarget.ID != target.ID { // don't failover to yourself
 					failoverTargets = append(failoverTargets, failoverTarget)
 				}
 			}
-
-			// If we filtered everything out then no point in having a failover.
-			if len(failoverTargets) > 0 {
-				df := &structs.DiscoveryFailover{}
-				node.Resolver.Failover = df
-
-				// Take care of doing any redirects or configuration loading
-				// related to targets by cheating a bit and recursing into
-				// ourselves.
-				for _, target := range failoverTargets {
-					failoverResolveNode, err := c.getResolverNode(target, true)
-					if err != nil {
-						return nil, err
-					}
-					failoverTarget := failoverResolveNode.Resolver.Target
-					df.Targets = append(df.Targets, failoverTarget)
+		} else if len(failover.Targets) > 0 {
+			for _, t := range failover.Targets {
+				// Rewrite the target as per the failover policy.
+				failoverTarget := c.rewriteTarget(target, t.ToDiscoveryTargetOpts())
+				if failoverTarget.ID != target.ID { // don't failover to yourself
+					failoverTargets = append(failoverTargets, failoverTarget)
 				}
 			}
+		} else if failover.SamenessGroup != "" {
+			opts := structs.MergeDiscoveryTargetOpts(resolver.ToSamenessDiscoveryTargetOpts(),
+				failover.ToDiscoveryTargetOpts())
+			failoverTargets, err = c.makeSamenessGroupFailover(target, opts, failover.SamenessGroup)
+			if err != nil {
+				return nil, err
+			}
+		} else {
+			// Rewrite the target as per the failover policy.
+			failoverTarget := c.rewriteTarget(target, failover.ToDiscoveryTargetOpts())
+			if failoverTarget.ID != target.ID { // don't failover to yourself
+				failoverTargets = append(failoverTargets, failoverTarget)
+			}
+		}
+
+	}
+
+	// If we filtered everything out then no point in having a failover.
+	if len(failoverTargets) > 0 {
+		df := &structs.DiscoveryFailover{}
+		node.Resolver.Failover = df
+
+		df.Policy = failoverPolicy
+
+		// Take care of doing any redirects or configuration loading
+		// related to targets by cheating a bit and recursing into
+		// ourselves.
+		for _, target := range failoverTargets {
+			failoverResolveNode, err := c.getResolverNode(target, true)
+			if err != nil {
+				return nil, err
+			}
+			failoverTarget := failoverResolveNode.Resolver.Target
+			df.Targets = append(df.Targets, failoverTarget)
 		}
 	}
 
 	return node, nil
 }
 
-func newDefaultServiceResolver(sid structs.ServiceID) *structs.ServiceResolverConfigEntry {
+func (c *compiler) makeSamenessGroupFailover(target *structs.DiscoveryTarget, opts structs.DiscoveryTargetOpts, samenessGroupName string) ([]*structs.DiscoveryTarget, error) {
+	samenessGroup := c.entries.GetSamenessGroup(samenessGroupName)
+	if samenessGroup == nil {
+		return nil, &structs.ConfigEntryGraphError{
+			Message: fmt.Sprintf(
+				"sameness group missing for service %q",
+				target.Service,
+			),
+		}
+	}
+
+	var failoverTargets []*structs.DiscoveryTarget
+	for _, t := range samenessGroup.ToServiceResolverFailoverTargets() {
+		// Rewrite the target as per the failover policy.
+		targetOpts := structs.MergeDiscoveryTargetOpts(opts, t.ToDiscoveryTargetOpts())
+		failoverTarget := c.rewriteTarget(target, targetOpts)
+		if failoverTarget.ID != target.ID { // don't failover to yourself
+			failoverTargets = append(failoverTargets, failoverTarget)
+		}
+	}
+
+	return failoverTargets, nil
+}
+
+func (c *compiler) newDefaultServiceResolver(sid structs.ServiceID, peer string) *structs.ServiceResolverConfigEntry {
+	sg := c.entries.GetDefaultSamenessGroup()
+	entMeta := c.GetEnterpriseMeta()
+	if sg != nil && peer == "" && (entMeta == nil || sid.PartitionOrDefault() == entMeta.PartitionOrDefault()) {
+		return &structs.ServiceResolverConfigEntry{
+			Kind:           structs.ServiceResolver,
+			Name:           sid.ID,
+			EnterpriseMeta: sid.EnterpriseMeta,
+			// This needs to be a redirect rather than failover because failovers
+			// implicitly include the local service. This isn't the behavior we want
+			// for services on sameness groups the local partition isn't a member of.
+			Redirect: &structs.ServiceResolverRedirect{
+				SamenessGroup: sg.Name,
+			},
+		}
+	}
+
 	return &structs.ServiceResolverConfigEntry{
 		Kind:           structs.ServiceResolver,
 		Name:           sid.ID,

@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package consul
 
 import (
@@ -5,7 +8,7 @@ import (
 
 	"github.com/hashicorp/consul/acl"
 	"github.com/hashicorp/consul/agent/consul/stream"
-	"github.com/hashicorp/consul/agent/grpc/private/services/subscribe"
+	"github.com/hashicorp/consul/agent/grpc-internal/services/subscribe"
 	"github.com/hashicorp/consul/agent/structs"
 )
 

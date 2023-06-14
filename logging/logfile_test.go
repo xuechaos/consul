@@ -1,7 +1,9 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package logging
 
 import (
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"sort"
@@ -44,7 +46,7 @@ func TestLogFile_openNew(t *testing.T) {
 	_, err = logFile.Write([]byte(msg))
 	require.NoError(t, err)
 
-	content, err := ioutil.ReadFile(logFile.FileInfo.Name())
+	content, err := os.ReadFile(logFile.FileInfo.Name())
 	require.NoError(t, err)
 	require.Contains(t, string(content), msg)
 }
@@ -79,11 +81,11 @@ func TestLogFile_PruneFiles(t *testing.T) {
 	sort.Strings(logFiles)
 	require.Len(t, logFiles, 2)
 
-	content, err := ioutil.ReadFile(filepath.Join(tempDir, logFiles[0]))
+	content, err := os.ReadFile(filepath.Join(tempDir, logFiles[0]))
 	require.NoError(t, err)
 	require.Contains(t, string(content), "Second File")
 
-	content, err = ioutil.ReadFile(filepath.Join(tempDir, logFiles[1]))
+	content, err = os.ReadFile(filepath.Join(tempDir, logFiles[1]))
 	require.NoError(t, err)
 	require.Contains(t, string(content), "Third File")
 }

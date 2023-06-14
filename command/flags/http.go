@@ -1,8 +1,11 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package flags
 
 import (
 	"flag"
-	"io/ioutil"
+	"os"
 	"strings"
 
 	"github.com/hashicorp/consul/api"
@@ -98,6 +101,14 @@ func (f *HTTPFlags) Datacenter() string {
 	return f.datacenter.String()
 }
 
+func (f *HTTPFlags) Namespace() string {
+	return f.namespace.String()
+}
+
+func (f *HTTPFlags) Partition() string {
+	return f.partition.String()
+}
+
 func (f *HTTPFlags) Stale() bool {
 	if f.stale.v == nil {
 		return false
@@ -127,7 +138,7 @@ func (f *HTTPFlags) ReadTokenFile() (string, error) {
 		return "", nil
 	}
 
-	data, err := ioutil.ReadFile(tokenFile)
+	data, err := os.ReadFile(tokenFile)
 	if err != nil {
 		return "", err
 	}

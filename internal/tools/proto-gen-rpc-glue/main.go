@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package main
 
 import (
@@ -105,12 +108,6 @@ func processFile(path string) error {
 			if ann.Datacenter != "" {
 				log.Printf("    Datacenter from %s", ann.Datacenter)
 			}
-			if ann.ReadTODO != "" {
-				log.Printf("    ReadTODO from %s", ann.ReadTODO)
-			}
-			if ann.WriteTODO != "" {
-				log.Printf("    WriteTODO from %s", ann.WriteTODO)
-			}
 		}
 	}
 
@@ -156,12 +153,6 @@ var _ time.Month
 		}
 		if typ.Annotation.Datacenter != "" {
 			buf.WriteString(fmt.Sprintf(tmplDatacenter, typ.Name, typ.Annotation.Datacenter))
-		}
-		if typ.Annotation.ReadTODO != "" {
-			buf.WriteString(fmt.Sprintf(tmplReadTODO, typ.Name, typ.Annotation.ReadTODO))
-		}
-		if typ.Annotation.WriteTODO != "" {
-			buf.WriteString(fmt.Sprintf(tmplWriteTODO, typ.Name, typ.Annotation.WriteTODO))
 		}
 	}
 
@@ -266,6 +257,7 @@ type Annotation struct {
 	TargetDatacenter string
 	Datacenter       string
 	ReadTODO         string
+	LeaderReadTODO   string
 	WriteTODO        string
 }
 
@@ -314,11 +306,6 @@ func getAnnotation(doc []*ast.Comment) (Annotation, error) {
 			ann.Datacenter = "Datacenter"
 		case strings.HasPrefix(part, "Datacenter="):
 			ann.Datacenter = strings.TrimPrefix(part, "Datacenter=")
-
-		case part == "ReadTODO":
-			ann.ReadTODO = "ReadTODO"
-		case part == "WriteTODO":
-			ann.WriteTODO = "WriteTODO"
 
 		default:
 			return Annotation{}, fmt.Errorf("unexpected annotation part: %s", part)
@@ -376,14 +363,6 @@ func (msg *%[1]s) HasTimedOut(start time.Time, rpcHoldTimeout time.Duration, a t
 	return msg.%[2]s.HasTimedOut(start, rpcHoldTimeout, a, b)
 }
 
-// Timeout implements structs.RPCInfo
-func (msg *%[1]s) Timeout(rpcHoldTimeout time.Duration, a time.Duration, b time.Duration) time.Duration {
-	if msg == nil || msg.%[2]s == nil {
-		return 0
-	}
-	return msg.%[2]s.Timeout(rpcHoldTimeout, a, b)
-}
-
 // IsRead implements structs.RPCInfo
 func (msg *%[1]s) IsRead() bool {
 	return false
@@ -432,14 +411,6 @@ func (msg *%[1]s) HasTimedOut(start time.Time, rpcHoldTimeout time.Duration, a t
 	return msg.%[2]s.HasTimedOut(start, rpcHoldTimeout, a, b)
 }
 
-// Timeout implements structs.RPCInfo
-func (msg *%[1]s) Timeout(rpcHoldTimeout time.Duration, a time.Duration, b time.Duration) time.Duration {
-	if msg == nil || msg.%[2]s == nil {
-		return 0
-	}
-	return msg.%[2]s.Timeout(rpcHoldTimeout, a, b)
-}
-
 // SetTokenSecret implements structs.RPCInfo
 func (msg *%[1]s) SetTokenSecret(s string) {
     // TODO: initialize if nil
@@ -460,86 +431,6 @@ func (msg *%[1]s) Token() string {
 		return ""
 	}
 	return msg.%[2]s.Token
-}
-`
-
-const tmplReadTODO = `
-// IsRead implements structs.RPCInfo
-func (msg *%[1]s) IsRead() bool {
-	// TODO(peering): figure out read semantics here
-	return true
-}
-
-// AllowStaleRead implements structs.RPCInfo
-func (msg *%[1]s) AllowStaleRead() bool {
-	// TODO(peering): figure out read semantics here
-	return false
-}
-
-// HasTimedOut implements structs.RPCInfo
-func (msg *%[1]s) HasTimedOut(start time.Time, rpcHoldTimeout time.Duration, a time.Duration, b time.Duration) (bool, error) {
-	// TODO(peering): figure out read semantics here
-	return time.Since(start) > rpcHoldTimeout, nil
-}
-
-// Timeout implements structs.RPCInfo
-func (msg *%[1]s) Timeout(rpcHoldTimeout time.Duration, a time.Duration, b time.Duration) time.Duration {
-	// TODO(peering): figure out read semantics here
-	return rpcHoldTimeout
-}
-
-// SetTokenSecret implements structs.RPCInfo
-func (msg *%[1]s) SetTokenSecret(s string) {
-	// TODO(peering): figure out read semantics here
-}
-
-// TokenSecret implements structs.RPCInfo
-func (msg *%[1]s) TokenSecret() string {
-	// TODO(peering): figure out read semantics here
-	return ""
-}
-
-// Token implements structs.RPCInfo
-func (msg *%[1]s) Token() string {
-	// TODO(peering): figure out read semantics here
-	return ""
-}
-`
-
-const tmplWriteTODO = `
-// IsRead implements structs.RPCInfo
-func (msg *%[1]s) IsRead() bool {
-	// TODO(peering): figure out write semantics here
-	return false
-}
-
-// AllowStaleRead implements structs.RPCInfo
-func (msg *%[1]s) AllowStaleRead() bool {
-	// TODO(peering): figure out write semantics here
-	return false
-}
-
-// HasTimedOut implements structs.RPCInfo
-func (msg *%[1]s) HasTimedOut(start time.Time, rpcHoldTimeout time.Duration, a time.Duration, b time.Duration) (bool, error) {
-	// TODO(peering): figure out write semantics here
-	return time.Since(start) > rpcHoldTimeout, nil
-}
-
-// Timeout implements structs.RPCInfo
-func (msg *%[1]s) Timeout(rpcHoldTimeout time.Duration, a time.Duration, b time.Duration) time.Duration {
-	// TODO(peering): figure out write semantics here
-	return rpcHoldTimeout
-}
-
-// SetTokenSecret implements structs.RPCInfo
-func (msg *%[1]s) SetTokenSecret(s string) {
-	// TODO(peering): figure out write semantics here
-}
-
-// TokenSecret implements structs.RPCInfo
-func (msg *%[1]s) TokenSecret() string {
-	// TODO(peering): figure out write semantics here
-	return ""
 }
 `
 
@@ -574,20 +465,22 @@ func (msg *%[1]s) AllowStaleRead() bool {
 	return msg.%[2]s.AllowStaleRead()
 }
 
+// BlockingTimeout implements pool.BlockableQuery
+func (msg *%[1]s) BlockingTimeout(maxQueryTime, defaultQueryTime time.Duration) time.Duration {
+	maxTime := structs.DurationFromProto(msg.%[2]s.GetMaxQueryTime())
+	o := structs.QueryOptions{
+		MaxQueryTime:  maxTime,
+		MinQueryIndex: msg.%[2]s.GetMinQueryIndex(),
+	}
+	return o.BlockingTimeout(maxQueryTime, defaultQueryTime)
+}
+
 // HasTimedOut implements structs.RPCInfo
 func (msg *%[1]s) HasTimedOut(start time.Time, rpcHoldTimeout time.Duration, a time.Duration, b time.Duration) (bool, error) {
 	if msg == nil || msg.%[2]s == nil {
 		return false, nil
 	}
 	return msg.%[2]s.HasTimedOut(start, rpcHoldTimeout, a, b)
-}
-
-// Timeout implements structs.RPCInfo
-func (msg *%[1]s) Timeout(rpcHoldTimeout time.Duration, a time.Duration, b time.Duration) time.Duration {
-	if msg == nil || msg.%[2]s == nil {
-		return 0
-	}
-	return msg.%[2]s.Timeout(rpcHoldTimeout, a, b)
 }
 
 // SetTokenSecret implements structs.RPCInfo

@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 //go:build !consulent
 // +build !consulent
 
@@ -13,11 +16,11 @@ import (
 	"github.com/hashicorp/consul/agent/structs"
 )
 
-func kvsIndexer() indexerSingleWithPrefix {
-	return indexerSingleWithPrefix{
-		readIndex:   readIndex(indexFromIDValue),
-		writeIndex:  writeIndex(indexFromIDValue),
-		prefixIndex: prefixIndex(prefixIndexForIDValue),
+func kvsIndexer() indexerSingleWithPrefix[singleValueID, singleValueID, any] {
+	return indexerSingleWithPrefix[singleValueID, singleValueID, any]{
+		readIndex:   indexFromIDValue,
+		writeIndex:  indexFromIDValue,
+		prefixIndex: prefixIndexForIDValue,
 	}
 }
 

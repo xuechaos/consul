@@ -1,4 +1,7 @@
 #!/bin/bash
+# Copyright (c) HashiCorp, Inc.
+# SPDX-License-Identifier: MPL-2.0
+
 
 set -euo pipefail
 
@@ -73,7 +76,7 @@ function verify_rpm {
       docker_platform="linux/amd64"
       docker_image="amd64/centos:7"
       ;;
-    *.arm.rpm)
+    *.armv7hl.rpm)
       docker_platform="linux/arm/v7"
       docker_image="arm32v7/fedora:36"
       ;;
@@ -120,7 +123,7 @@ function verify_deb {
       docker_platform="linux/amd64"
       docker_image="amd64/debian:bullseye"
       ;;
-    *_arm.deb)
+    *_armhf.deb)
       docker_platform="linux/arm/v7"
       docker_image="arm32v7/debian:bullseye"
       ;;

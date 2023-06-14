@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package prepared_query
 
 import (
@@ -22,7 +25,7 @@ var (
 		},
 		Service: structs.ServiceQuery{
 			Service: "${name.full}",
-			Failover: structs.QueryDatacenterOptions{
+			Failover: structs.QueryFailoverOptions{
 				Datacenters: []string{
 					"${name.full}",
 					"${name.prefix}",
@@ -69,7 +72,7 @@ var (
 		},
 		Service: structs.ServiceQuery{
 			Service: "${name.full}",
-			Failover: structs.QueryDatacenterOptions{
+			Failover: structs.QueryFailoverOptions{
 				Datacenters: []string{
 					"dc1",
 					"dc2",

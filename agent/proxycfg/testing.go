@@ -1,9 +1,12 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package proxycfg
 
 import (
 	"context"
 	"fmt"
-	"io/ioutil"
+	"os"
 	"path"
 	"path/filepath"
 	"runtime"
@@ -18,9 +21,10 @@ import (
 	"github.com/hashicorp/consul/agent/cache"
 	cachetype "github.com/hashicorp/consul/agent/cache-types"
 	"github.com/hashicorp/consul/agent/connect"
+	"github.com/hashicorp/consul/agent/leafcert"
 	"github.com/hashicorp/consul/agent/structs"
 	"github.com/hashicorp/consul/api"
-	"github.com/hashicorp/consul/proto/pbpeering"
+	"github.com/hashicorp/consul/proto/private/pbpeering"
 )
 
 func TestPeerTrustBundles(t testing.T) *pbpeering.TrustBundleListByServiceResponse {
@@ -138,19 +142,15 @@ func TestMeshGatewayLeafForCA(t testing.T, ca *structs.CARoot) *structs.IssuedCe
 
 // TestIntentions returns a sample intentions match result useful to
 // mocking service discovery cache results.
-func TestIntentions() *structs.IndexedIntentionMatches {
-	return &structs.IndexedIntentionMatches{
-		Matches: []structs.Intentions{
-			[]*structs.Intention{
-				{
-					ID:              "foo",
-					SourceNS:        "default",
-					SourceName:      "billing",
-					DestinationNS:   "default",
-					DestinationName: "web",
-					Action:          structs.IntentionActionAllow,
-				},
-			},
+func TestIntentions() structs.SimplifiedIntentions {
+	return structs.SimplifiedIntentions{
+		{
+			ID:              "foo",
+			SourceNS:        "default",
+			SourceName:      "billing",
+			DestinationNS:   "default",
+			DestinationName: "web",
+			Action:          structs.IntentionActionAllow,
 		},
 	}
 }
@@ -556,7 +556,7 @@ func TestGatewayServiceGroupBarDC1(t testing.T) structs.CheckServiceNodes {
 				},
 				Proxy: structs.ConnectProxyConfig{
 					DestinationServiceName: "bar",
-					Upstreams:              structs.TestUpstreams(t),
+					Upstreams:              structs.TestUpstreams(t, false),
 				},
 			},
 		},
@@ -577,7 +577,7 @@ func TestGatewayServiceGroupBarDC1(t testing.T) structs.CheckServiceNodes {
 				},
 				Proxy: structs.ConnectProxyConfig{
 					DestinationServiceName: "bar",
-					Upstreams:              structs.TestUpstreams(t),
+					Upstreams:              structs.TestUpstreams(t, false),
 				},
 			},
 		},
@@ -598,7 +598,7 @@ func TestGatewayServiceGroupBarDC1(t testing.T) structs.CheckServiceNodes {
 				},
 				Proxy: structs.ConnectProxyConfig{
 					DestinationServiceName: "bar",
-					Upstreams:              structs.TestUpstreams(t),
+					Upstreams:              structs.TestUpstreams(t, false),
 				},
 			},
 		},
@@ -624,7 +624,7 @@ func TestGatewayServiceGroupFooDC1(t testing.T) structs.CheckServiceNodes {
 				},
 				Proxy: structs.ConnectProxyConfig{
 					DestinationServiceName: "foo",
-					Upstreams:              structs.TestUpstreams(t),
+					Upstreams:              structs.TestUpstreams(t, false),
 				},
 			},
 		},
@@ -645,7 +645,7 @@ func TestGatewayServiceGroupFooDC1(t testing.T) structs.CheckServiceNodes {
 				},
 				Proxy: structs.ConnectProxyConfig{
 					DestinationServiceName: "foo",
-					Upstreams:              structs.TestUpstreams(t),
+					Upstreams:              structs.TestUpstreams(t, false),
 				},
 			},
 		},
@@ -666,7 +666,7 @@ func TestGatewayServiceGroupFooDC1(t testing.T) structs.CheckServiceNodes {
 				},
 				Proxy: structs.ConnectProxyConfig{
 					DestinationServiceName: "foo",
-					Upstreams:              structs.TestUpstreams(t),
+					Upstreams:              structs.TestUpstreams(t, false),
 				},
 			},
 		},
@@ -687,7 +687,7 @@ func TestGatewayServiceGroupFooDC1(t testing.T) structs.CheckServiceNodes {
 				},
 				Proxy: structs.ConnectProxyConfig{
 					DestinationServiceName: "foo",
-					Upstreams:              structs.TestUpstreams(t),
+					Upstreams:              structs.TestUpstreams(t, false),
 				},
 			},
 			Checks: structs.HealthChecks{
@@ -743,17 +743,21 @@ func testConfigSnapshotFixture(
 			Datacenters:                     &noopDataSource[*structs.DatacentersRequest]{},
 			FederationStateListMeshGateways: &noopDataSource[*structs.DCSpecificRequest]{},
 			GatewayServices:                 &noopDataSource[*structs.ServiceSpecificRequest]{},
+			ServiceGateways:                 &noopDataSource[*structs.ServiceSpecificRequest]{},
 			Health:                          &noopDataSource[*structs.ServiceSpecificRequest]{},
 			HTTPChecks:                      &noopDataSource[*cachetype.ServiceHTTPChecksRequest]{},
-			Intentions:                      &noopDataSource[*structs.IntentionQueryRequest]{},
+			Intentions:                      &noopDataSource[*structs.ServiceSpecificRequest]{},
 			IntentionUpstreams:              &noopDataSource[*structs.ServiceSpecificRequest]{},
+			IntentionUpstreamsDestination:   &noopDataSource[*structs.ServiceSpecificRequest]{},
 			InternalServiceDump:             &noopDataSource[*structs.ServiceDumpRequest]{},
-			LeafCertificate:                 &noopDataSource[*cachetype.ConnectCALeafRequest]{},
+			LeafCertificate:                 &noopDataSource[*leafcert.ConnectCALeafRequest]{},
+			PeeringList:                     &noopDataSource[*cachetype.PeeringListRequest]{},
+			PeeredUpstreams:                 &noopDataSource[*structs.PartitionSpecificRequest]{},
 			PreparedQuery:                   &noopDataSource[*structs.PreparedQueryExecuteRequest]{},
 			ResolvedServiceConfig:           &noopDataSource[*structs.ServiceConfigRequest]{},
 			ServiceList:                     &noopDataSource[*structs.DCSpecificRequest]{},
-			TrustBundle:                     &noopDataSource[*pbpeering.TrustBundleReadRequest]{},
-			TrustBundleList:                 &noopDataSource[*pbpeering.TrustBundleListByServiceRequest]{},
+			TrustBundle:                     &noopDataSource[*cachetype.TrustBundleReadRequest]{},
+			TrustBundleList:                 &noopDataSource[*cachetype.TrustBundleListRequest]{},
 			ExportedPeeredServices:          &noopDataSource[*structs.DCSpecificRequest]{},
 		},
 		dnsConfig: DNSConfig{ // TODO: make configurable
@@ -923,7 +927,7 @@ func golden(t testing.T, name string) string {
 	t.Helper()
 
 	golden := filepath.Join(projectRoot(), "../", "/xds/testdata", name+".golden")
-	expected, err := ioutil.ReadFile(golden)
+	expected, err := os.ReadFile(golden)
 	require.NoError(t, err)
 
 	return string(expected)
@@ -947,15 +951,17 @@ func NewTestDataSources() *TestDataSources {
 		GatewayServices:                 NewTestDataSource[*structs.ServiceSpecificRequest, *structs.IndexedGatewayServices](),
 		Health:                          NewTestDataSource[*structs.ServiceSpecificRequest, *structs.IndexedCheckServiceNodes](),
 		HTTPChecks:                      NewTestDataSource[*cachetype.ServiceHTTPChecksRequest, []structs.CheckType](),
-		Intentions:                      NewTestDataSource[*structs.IntentionQueryRequest, *structs.IndexedIntentionMatches](),
+		Intentions:                      NewTestDataSource[*structs.ServiceSpecificRequest, structs.SimplifiedIntentions](),
 		IntentionUpstreams:              NewTestDataSource[*structs.ServiceSpecificRequest, *structs.IndexedServiceList](),
-		InternalServiceDump:             NewTestDataSource[*structs.ServiceDumpRequest, *structs.IndexedNodesWithGateways](),
-		LeafCertificate:                 NewTestDataSource[*cachetype.ConnectCALeafRequest, *structs.IssuedCert](),
+		IntentionUpstreamsDestination:   NewTestDataSource[*structs.ServiceSpecificRequest, *structs.IndexedServiceList](),
+		InternalServiceDump:             NewTestDataSource[*structs.ServiceDumpRequest, *structs.IndexedCheckServiceNodes](),
+		LeafCertificate:                 NewTestDataSource[*leafcert.ConnectCALeafRequest, *structs.IssuedCert](),
+		PeeringList:                     NewTestDataSource[*cachetype.PeeringListRequest, *pbpeering.PeeringListResponse](),
 		PreparedQuery:                   NewTestDataSource[*structs.PreparedQueryExecuteRequest, *structs.PreparedQueryExecuteResponse](),
 		ResolvedServiceConfig:           NewTestDataSource[*structs.ServiceConfigRequest, *structs.ServiceConfigResponse](),
 		ServiceList:                     NewTestDataSource[*structs.DCSpecificRequest, *structs.IndexedServiceList](),
-		TrustBundle:                     NewTestDataSource[*pbpeering.TrustBundleReadRequest, *pbpeering.TrustBundleReadResponse](),
-		TrustBundleList:                 NewTestDataSource[*pbpeering.TrustBundleListByServiceRequest, *pbpeering.TrustBundleListByServiceResponse](),
+		TrustBundle:                     NewTestDataSource[*cachetype.TrustBundleReadRequest, *pbpeering.TrustBundleReadResponse](),
+		TrustBundleList:                 NewTestDataSource[*cachetype.TrustBundleListRequest, *pbpeering.TrustBundleListByServiceResponse](),
 	}
 	srcs.buildEnterpriseSources()
 	return srcs
@@ -969,40 +975,48 @@ type TestDataSources struct {
 	FederationStateListMeshGateways *TestDataSource[*structs.DCSpecificRequest, *structs.DatacenterIndexedCheckServiceNodes]
 	Datacenters                     *TestDataSource[*structs.DatacentersRequest, *[]string]
 	GatewayServices                 *TestDataSource[*structs.ServiceSpecificRequest, *structs.IndexedGatewayServices]
+	ServiceGateways                 *TestDataSource[*structs.ServiceSpecificRequest, *structs.IndexedServiceNodes]
 	Health                          *TestDataSource[*structs.ServiceSpecificRequest, *structs.IndexedCheckServiceNodes]
 	HTTPChecks                      *TestDataSource[*cachetype.ServiceHTTPChecksRequest, []structs.CheckType]
-	Intentions                      *TestDataSource[*structs.IntentionQueryRequest, *structs.IndexedIntentionMatches]
+	Intentions                      *TestDataSource[*structs.ServiceSpecificRequest, structs.SimplifiedIntentions]
 	IntentionUpstreams              *TestDataSource[*structs.ServiceSpecificRequest, *structs.IndexedServiceList]
-	InternalServiceDump             *TestDataSource[*structs.ServiceDumpRequest, *structs.IndexedNodesWithGateways]
-	LeafCertificate                 *TestDataSource[*cachetype.ConnectCALeafRequest, *structs.IssuedCert]
+	IntentionUpstreamsDestination   *TestDataSource[*structs.ServiceSpecificRequest, *structs.IndexedServiceList]
+	InternalServiceDump             *TestDataSource[*structs.ServiceDumpRequest, *structs.IndexedCheckServiceNodes]
+	LeafCertificate                 *TestDataSource[*leafcert.ConnectCALeafRequest, *structs.IssuedCert]
+	PeeringList                     *TestDataSource[*cachetype.PeeringListRequest, *pbpeering.PeeringListResponse]
+	PeeredUpstreams                 *TestDataSource[*structs.PartitionSpecificRequest, *structs.IndexedPeeredServiceList]
 	PreparedQuery                   *TestDataSource[*structs.PreparedQueryExecuteRequest, *structs.PreparedQueryExecuteResponse]
 	ResolvedServiceConfig           *TestDataSource[*structs.ServiceConfigRequest, *structs.ServiceConfigResponse]
 	ServiceList                     *TestDataSource[*structs.DCSpecificRequest, *structs.IndexedServiceList]
-	TrustBundle                     *TestDataSource[*pbpeering.TrustBundleReadRequest, *pbpeering.TrustBundleReadResponse]
-	TrustBundleList                 *TestDataSource[*pbpeering.TrustBundleListByServiceRequest, *pbpeering.TrustBundleListByServiceResponse]
+	TrustBundle                     *TestDataSource[*cachetype.TrustBundleReadRequest, *pbpeering.TrustBundleReadResponse]
+	TrustBundleList                 *TestDataSource[*cachetype.TrustBundleListRequest, *pbpeering.TrustBundleListByServiceResponse]
 
 	TestDataSourcesEnterprise
 }
 
 func (t *TestDataSources) ToDataSources() DataSources {
 	ds := DataSources{
-		CARoots:                t.CARoots,
-		CompiledDiscoveryChain: t.CompiledDiscoveryChain,
-		ConfigEntry:            t.ConfigEntry,
-		ConfigEntryList:        t.ConfigEntryList,
-		Datacenters:            t.Datacenters,
-		GatewayServices:        t.GatewayServices,
-		Health:                 t.Health,
-		HTTPChecks:             t.HTTPChecks,
-		Intentions:             t.Intentions,
-		IntentionUpstreams:     t.IntentionUpstreams,
-		InternalServiceDump:    t.InternalServiceDump,
-		LeafCertificate:        t.LeafCertificate,
-		PreparedQuery:          t.PreparedQuery,
-		ResolvedServiceConfig:  t.ResolvedServiceConfig,
-		ServiceList:            t.ServiceList,
-		TrustBundle:            t.TrustBundle,
-		TrustBundleList:        t.TrustBundleList,
+		CARoots:                       t.CARoots,
+		CompiledDiscoveryChain:        t.CompiledDiscoveryChain,
+		ConfigEntry:                   t.ConfigEntry,
+		ConfigEntryList:               t.ConfigEntryList,
+		Datacenters:                   t.Datacenters,
+		GatewayServices:               t.GatewayServices,
+		ServiceGateways:               t.ServiceGateways,
+		Health:                        t.Health,
+		HTTPChecks:                    t.HTTPChecks,
+		Intentions:                    t.Intentions,
+		IntentionUpstreams:            t.IntentionUpstreams,
+		IntentionUpstreamsDestination: t.IntentionUpstreamsDestination,
+		InternalServiceDump:           t.InternalServiceDump,
+		LeafCertificate:               t.LeafCertificate,
+		PeeringList:                   t.PeeringList,
+		PeeredUpstreams:               t.PeeredUpstreams,
+		PreparedQuery:                 t.PreparedQuery,
+		ResolvedServiceConfig:         t.ResolvedServiceConfig,
+		ServiceList:                   t.ServiceList,
+		TrustBundle:                   t.TrustBundle,
+		TrustBundleList:               t.TrustBundleList,
 	}
 	t.fillEnterpriseDataSources(&ds)
 	return ds

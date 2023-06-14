@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package connect
 
 import (
@@ -7,7 +10,6 @@ import (
 	"crypto/x509"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net/http"
 	"reflect"
 	"sort"
@@ -255,7 +257,7 @@ func TestService_HTTPClient(t *testing.T) {
 		r.Check(err)
 		defer resp.Body.Close()
 
-		bodyBytes, err := ioutil.ReadAll(resp.Body)
+		bodyBytes, err := io.ReadAll(resp.Body)
 		r.Check(err)
 
 		got := string(bodyBytes)

@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 //go:build !consulent
 // +build !consulent
 
@@ -63,7 +66,7 @@ func TestStore_peersForService(t *testing.T) {
 						Name: "not-" + queryName,
 						Consumers: []structs.ServiceConsumer{
 							{
-								PeerName: "zip",
+								Peer: "zip",
 							},
 						},
 					},
@@ -80,7 +83,7 @@ func TestStore_peersForService(t *testing.T) {
 						Name: "not-" + queryName,
 						Consumers: []structs.ServiceConsumer{
 							{
-								PeerName: "zip",
+								Peer: "zip",
 							},
 						},
 					},
@@ -88,10 +91,10 @@ func TestStore_peersForService(t *testing.T) {
 						Name: structs.WildcardSpecifier,
 						Consumers: []structs.ServiceConsumer{
 							{
-								PeerName: "bar",
+								Peer: "bar",
 							},
 							{
-								PeerName: "baz",
+								Peer: "baz",
 							},
 						},
 					},
@@ -108,7 +111,7 @@ func TestStore_peersForService(t *testing.T) {
 						Name: queryName,
 						Consumers: []structs.ServiceConsumer{
 							{
-								PeerName: "baz",
+								Peer: "baz",
 							},
 						},
 					},
@@ -116,7 +119,7 @@ func TestStore_peersForService(t *testing.T) {
 						Name: structs.WildcardSpecifier,
 						Consumers: []structs.ServiceConsumer{
 							{
-								PeerName: "zip",
+								Peer: "zip",
 							},
 						},
 					},

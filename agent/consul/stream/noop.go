@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package stream
 
 import (
@@ -9,7 +12,7 @@ type NoOpEventPublisher struct{}
 
 func (NoOpEventPublisher) Publish([]Event) {}
 
-func (NoOpEventPublisher) RegisterHandler(Topic, SnapshotFunc) error {
+func (NoOpEventPublisher) RegisterHandler(Topic, SnapshotFunc, bool) error {
 	return fmt.Errorf("stream event publisher is disabled")
 }
 

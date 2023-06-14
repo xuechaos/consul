@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package structs
 
 import (
@@ -90,6 +93,7 @@ func TestCheckDefinitionToCheckType(t *testing.T) {
 		Interval:                       1 * time.Second,
 		DockerContainerID:              "abc123",
 		Shell:                          "/bin/ksh",
+		OSService:                      "myco-svctype-svcname-001",
 		TLSSkipVerify:                  true,
 		Timeout:                        2 * time.Second,
 		TTL:                            3 * time.Second,
@@ -108,6 +112,7 @@ func TestCheckDefinitionToCheckType(t *testing.T) {
 		Interval:                       1 * time.Second,
 		DockerContainerID:              "abc123",
 		Shell:                          "/bin/ksh",
+		OSService:                      "myco-svctype-svcname-001",
 		TLSSkipVerify:                  true,
 		Timeout:                        2 * time.Second,
 		TTL:                            3 * time.Second,

@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package flags
 
 import (
@@ -34,4 +37,16 @@ func (h *FlagMapValue) Set(value string) error {
 	*h = headers
 
 	return nil
+}
+
+// Merge will overlay this value if it has been set.
+func (h *FlagMapValue) Merge(onto map[string]string) {
+	if h == nil || onto == nil {
+		return
+	}
+	for k, v := range *h {
+		if _, ok := onto[k]; !ok {
+			onto[k] = v
+		}
+	}
 }

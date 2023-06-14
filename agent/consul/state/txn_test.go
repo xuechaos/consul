@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package state
 
 import (
@@ -579,6 +582,22 @@ func TestStateStore_Txn_KVS(t *testing.T) {
 		},
 		&structs.TxnOp{
 			KV: &structs.TxnKVOp{
+				Verb: api.KVGetOrEmpty,
+				DirEnt: structs.DirEntry{
+					Key: "foo/update",
+				},
+			},
+		},
+		&structs.TxnOp{
+			KV: &structs.TxnKVOp{
+				Verb: api.KVGetOrEmpty,
+				DirEnt: structs.DirEntry{
+					Key: "foo/not-exists",
+				},
+			},
+		},
+		&structs.TxnOp{
+			KV: &structs.TxnKVOp{
 				Verb: api.KVCheckIndex,
 				DirEnt: structs.DirEntry{
 					Key: "foo/update",
@@ -700,6 +719,22 @@ func TestStateStore_Txn_KVS(t *testing.T) {
 					CreateIndex: 5,
 					ModifyIndex: 5,
 				},
+			},
+		},
+		&structs.TxnResult{
+			KV: &structs.DirEntry{
+				Key:   "foo/update",
+				Value: []byte("stale"),
+				RaftIndex: structs.RaftIndex{
+					CreateIndex: 5,
+					ModifyIndex: 5,
+				},
+			},
+		},
+		&structs.TxnResult{
+			KV: &structs.DirEntry{
+				Key:   "foo/not-exists",
+				Value: nil,
 			},
 		},
 		&structs.TxnResult{

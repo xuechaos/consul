@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package local
 
 import (
@@ -29,10 +32,10 @@ func TestSync(t *testing.T) {
 	state := local.NewState(local.Config{}, hclog.NewNullLogger(), tokens)
 	state.TriggerSyncChanges = func() {}
 
-	state.AddService(&structs.NodeService{
+	state.AddServiceWithChecks(&structs.NodeService{
 		ID:   serviceID,
 		Kind: structs.ServiceKindConnectProxy,
-	}, serviceToken)
+	}, nil, serviceToken, false)
 
 	cfgMgr := NewMockConfigManager(t)
 
@@ -96,10 +99,10 @@ func TestSync(t *testing.T) {
 		Return([]proxycfg.ProxyID{}).
 		Maybe()
 
-	state.AddService(&structs.NodeService{
+	state.AddServiceWithChecks(&structs.NodeService{
 		ID:   serviceID,
 		Kind: structs.ServiceKindConnectProxy,
-	}, "")
+	}, nil, "", false)
 
 	select {
 	case reg := <-registerCh:

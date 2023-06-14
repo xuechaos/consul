@@ -1,14 +1,23 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package state
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
 	memdb "github.com/hashicorp/go-memdb"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/hashicorp/consul/acl"
 	"github.com/hashicorp/consul/agent/configentry"
+	"github.com/hashicorp/consul/agent/consul/discoverychain"
 	"github.com/hashicorp/consul/agent/structs"
+	"github.com/hashicorp/consul/proto/private/pbpeering"
+	"github.com/hashicorp/consul/proto/private/prototest"
 	"github.com/hashicorp/consul/sdk/testutil"
 )
 
@@ -372,7 +381,7 @@ func TestStore_ServiceDefaults_Kind_Destination(t *testing.T) {
 	_, gatewayServices, err = s.GatewayServices(ws, "Gtwy1", nil)
 	require.NoError(t, err)
 	require.Len(t, gatewayServices, 1)
-	require.Equal(t, gatewayServices[0].ServiceKind, structs.GatewayServiceKindUnknown)
+	require.Equal(t, structs.GatewayServiceKindUnknown, gatewayServices[0].ServiceKind)
 
 	_, kindServices, err = s.ServiceNamesOfKind(ws, structs.ServiceKindDestination)
 	require.NoError(t, err)
@@ -710,13 +719,141 @@ func TestStore_ServiceDefaults_Kind_Destination_Wildcard(t *testing.T) {
 
 	require.NoError(t, s.DeleteConfigEntry(6, structs.ServiceDefaults, destination.Name, &destination.EnterpriseMeta))
 
-	//Watch is fired because we transitioned to a destination, by default we assume it's not.
+	// Watch is fired because we deleted the destination - now the mapping should be gone.
 	require.True(t, watchFired(ws))
 
 	_, gatewayServices, err = s.GatewayServices(ws, "Gtwy1", nil)
 	require.NoError(t, err)
-	require.Len(t, gatewayServices, 1)
-	require.Equal(t, gatewayServices[0].ServiceKind, structs.GatewayServiceKindUnknown)
+	require.Len(t, gatewayServices, 0)
+
+	t.Run("delete service instance before config entry", func(t *testing.T) {
+		// Set up a service with both a real instance and destination from a config entry.
+		require.NoError(t, s.EnsureNode(7, &structs.Node{Node: "foo", Address: "127.0.0.1"}))
+		require.NoError(t, s.EnsureService(8, "foo", &structs.NodeService{ID: "dest2", Service: "dest2", Tags: nil, Address: "", Port: 5000}))
+
+		ws = memdb.NewWatchSet()
+		_, gatewayServices, err = s.GatewayServices(ws, "Gtwy1", nil)
+		require.NoError(t, err)
+		require.Len(t, gatewayServices, 1)
+		require.Equal(t, structs.GatewayServiceKindService, gatewayServices[0].ServiceKind)
+
+		// Register destination; shouldn't change the gateway mapping.
+		destination2 := &structs.ServiceConfigEntry{
+			Kind:        structs.ServiceDefaults,
+			Name:        "dest2",
+			Destination: &structs.DestinationConfig{},
+		}
+		require.NoError(t, s.EnsureConfigEntry(9, destination2))
+		require.False(t, watchFired(ws))
+
+		ws = memdb.NewWatchSet()
+		_, gatewayServices, err = s.GatewayServices(ws, "Gtwy1", nil)
+		require.NoError(t, err)
+		require.Len(t, gatewayServices, 1)
+		expected := structs.GatewayServices{
+			{
+				Service:      structs.NewServiceName("dest2", nil),
+				Gateway:      structs.NewServiceName("Gtwy1", nil),
+				ServiceKind:  structs.GatewayServiceKindService,
+				GatewayKind:  structs.ServiceKindTerminatingGateway,
+				FromWildcard: true,
+				RaftIndex: structs.RaftIndex{
+					CreateIndex: 8,
+					ModifyIndex: 8,
+				},
+			},
+		}
+		require.Equal(t, expected, gatewayServices)
+
+		// Delete the service, mapping should still exist.
+		require.NoError(t, s.DeleteService(10, "foo", "dest2", nil, ""))
+		require.False(t, watchFired(ws))
+
+		ws = memdb.NewWatchSet()
+		_, gatewayServices, err = s.GatewayServices(ws, "Gtwy1", nil)
+		require.NoError(t, err)
+		require.Len(t, gatewayServices, 1)
+		require.Equal(t, expected, gatewayServices)
+
+		// Delete the config entry, mapping should be gone.
+		require.NoError(t, s.DeleteConfigEntry(11, structs.ServiceDefaults, "dest2", &destination.EnterpriseMeta))
+		require.True(t, watchFired(ws))
+
+		_, gatewayServices, err = s.GatewayServices(ws, "Gtwy1", nil)
+		require.NoError(t, err)
+		require.Empty(t, gatewayServices)
+	})
+
+	t.Run("delete config entry before service instance", func(t *testing.T) {
+		// Set up a service with both a real instance and destination from a config entry.
+		destination2 := &structs.ServiceConfigEntry{
+			Kind:        structs.ServiceDefaults,
+			Name:        "dest2",
+			Destination: &structs.DestinationConfig{},
+		}
+		require.NoError(t, s.EnsureConfigEntry(7, destination2))
+
+		ws = memdb.NewWatchSet()
+		_, gatewayServices, err = s.GatewayServices(ws, "Gtwy1", nil)
+		require.NoError(t, err)
+		require.Len(t, gatewayServices, 1)
+		expected := structs.GatewayServices{
+			{
+				Service:      structs.NewServiceName("dest2", nil),
+				Gateway:      structs.NewServiceName("Gtwy1", nil),
+				ServiceKind:  structs.GatewayServiceKindDestination,
+				GatewayKind:  structs.ServiceKindTerminatingGateway,
+				FromWildcard: true,
+				RaftIndex: structs.RaftIndex{
+					CreateIndex: 7,
+					ModifyIndex: 7,
+				},
+			},
+		}
+		require.Equal(t, expected, gatewayServices)
+
+		// Register service, only ServiceKind should have changed on the gateway mapping.
+		require.NoError(t, s.EnsureNode(8, &structs.Node{Node: "foo", Address: "127.0.0.1"}))
+		require.NoError(t, s.EnsureService(9, "foo", &structs.NodeService{ID: "dest2", Service: "dest2", Tags: nil, Address: "", Port: 5000}))
+		require.True(t, watchFired(ws))
+
+		ws = memdb.NewWatchSet()
+		_, gatewayServices, err = s.GatewayServices(ws, "Gtwy1", nil)
+		require.NoError(t, err)
+		require.Len(t, gatewayServices, 1)
+		expected = structs.GatewayServices{
+			{
+				Service:      structs.NewServiceName("dest2", nil),
+				Gateway:      structs.NewServiceName("Gtwy1", nil),
+				ServiceKind:  structs.GatewayServiceKindService,
+				GatewayKind:  structs.ServiceKindTerminatingGateway,
+				FromWildcard: true,
+				RaftIndex: structs.RaftIndex{
+					CreateIndex: 7,
+					ModifyIndex: 9,
+				},
+			},
+		}
+		require.Equal(t, expected, gatewayServices)
+
+		// Delete the config entry, mapping should still exist.
+		require.NoError(t, s.DeleteConfigEntry(10, structs.ServiceDefaults, "dest2", &destination.EnterpriseMeta))
+		require.False(t, watchFired(ws))
+
+		ws = memdb.NewWatchSet()
+		_, gatewayServices, err = s.GatewayServices(ws, "Gtwy1", nil)
+		require.NoError(t, err)
+		require.Len(t, gatewayServices, 1)
+		require.Equal(t, expected, gatewayServices)
+
+		// Delete the service, mapping should be gone.
+		require.NoError(t, s.DeleteService(11, "foo", "dest2", nil, ""))
+		require.True(t, watchFired(ws))
+
+		_, gatewayServices, err = s.GatewayServices(ws, "Gtwy1", nil)
+		require.NoError(t, err)
+		require.Empty(t, gatewayServices)
+	})
 }
 
 func TestStore_Service_TerminatingGateway_Kind_Service_Wildcard(t *testing.T) {
@@ -774,93 +911,76 @@ func TestStore_Service_TerminatingGateway_Kind_Service_Wildcard(t *testing.T) {
 	require.Len(t, gatewayServices, 0)
 }
 
-func TestStore_Service_TerminatingGateway_Kind_Service_Destination_Wildcard(t *testing.T) {
-	s := testConfigStateStore(t)
-
-	Gtwy := &structs.TerminatingGatewayConfigEntry{
-		Kind: structs.TerminatingGateway,
-		Name: "Gtwy1",
-		Services: []structs.LinkedService{
-			{
-				Name: "*",
-			},
-		},
-	}
-
-	// Create
-	require.NoError(t, s.EnsureConfigEntry(0, Gtwy))
-
-	service := &structs.NodeService{
-		Kind:    structs.ServiceKindTypical,
-		Service: "web",
-	}
-	destination := &structs.ServiceConfigEntry{
-		Kind:        structs.ServiceDefaults,
-		Name:        "web",
-		Destination: &structs.DestinationConfig{},
-	}
-
-	_, gatewayServices, err := s.GatewayServices(nil, "Gtwy1", nil)
-	require.NoError(t, err)
-	require.Len(t, gatewayServices, 0)
-
-	ws := memdb.NewWatchSet()
-	_, _, err = s.GatewayServices(ws, "Gtwy1", nil)
-	require.NoError(t, err)
-
-	// Create
-	require.NoError(t, s.EnsureConfigEntry(0, destination))
-
-	_, gatewayServices, err = s.GatewayServices(nil, "Gtwy1", nil)
-	require.NoError(t, err)
-	require.Len(t, gatewayServices, 1)
-	require.Equal(t, gatewayServices[0].ServiceKind, structs.GatewayServiceKindDestination)
-
-	require.NoError(t, s.EnsureNode(0, &structs.Node{Node: "node1"}))
-	require.NoError(t, s.EnsureService(0, "node1", service))
-
-	//Watch is fired because we transitioned to a destination, by default we assume it's not.
-	require.True(t, watchFired(ws))
-
-	_, gatewayServices, err = s.GatewayServices(ws, "Gtwy1", nil)
-	require.NoError(t, err)
-	require.Len(t, gatewayServices, 1)
-	require.Equal(t, gatewayServices[0].ServiceKind, structs.GatewayServiceKindService)
-
-	ws = memdb.NewWatchSet()
-	_, _, err = s.GatewayServices(ws, "Gtwy1", nil)
-	require.NoError(t, err)
-
-	require.NoError(t, s.DeleteService(6, "node1", service.ID, &service.EnterpriseMeta, ""))
-
-	//Watch is fired because we transitioned to a destination, by default we assume it's not.
-	require.True(t, watchFired(ws))
-
-	_, gatewayServices, err = s.GatewayServices(ws, "Gtwy1", nil)
-	require.NoError(t, err)
-	require.Len(t, gatewayServices, 0)
-
-}
-
 func TestStore_ConfigEntry_GraphValidation(t *testing.T) {
+	ensureConfigEntry := func(s *Store, idx uint64, entry structs.ConfigEntry) error {
+		if err := entry.Normalize(); err != nil {
+			return err
+		}
+		if err := entry.Validate(); err != nil {
+			return err
+		}
+		return s.EnsureConfigEntry(idx, entry)
+	}
+
 	type tcase struct {
 		entries        []structs.ConfigEntry
-		op             func(t *testing.T, s *Store) error
+		opAdd          structs.ConfigEntry
+		opDelete       configentry.KindName
 		expectErr      string
 		expectGraphErr bool
 	}
+
+	EMPTY_KN := configentry.KindName{}
+
+	run := func(t *testing.T, tc tcase) {
+		s := testConfigStateStore(t)
+		for _, entry := range tc.entries {
+			require.NoError(t, ensureConfigEntry(s, 0, entry))
+		}
+
+		nOps := 0
+		if tc.opAdd != nil {
+			nOps++
+		}
+		if tc.opDelete != EMPTY_KN {
+			nOps++
+		}
+		require.Equal(t, 1, nOps, "exactly one operation is required")
+
+		var err error
+		switch {
+		case tc.opAdd != nil:
+			err = ensureConfigEntry(s, 0, tc.opAdd)
+		case tc.opDelete != EMPTY_KN:
+			kn := tc.opDelete
+			err = s.DeleteConfigEntry(0, kn.Kind, kn.Name, &kn.EnterpriseMeta)
+		default:
+			t.Fatal("not possible")
+		}
+
+		if tc.expectErr != "" {
+			require.Error(t, err)
+			require.Contains(t, err.Error(), tc.expectErr)
+			_, ok := err.(*structs.ConfigEntryGraphError)
+			if tc.expectGraphErr {
+				require.True(t, ok, "%T is not a *ConfigEntryGraphError", err)
+			} else {
+				require.False(t, ok, "did not expect a *ConfigEntryGraphError here: %v", err)
+			}
+		} else {
+			require.NoError(t, err)
+		}
+	}
+
 	cases := map[string]tcase{
 		"splitter fails without default protocol": {
 			entries: []structs.ConfigEntry{},
-			op: func(t *testing.T, s *Store) error {
-				entry := &structs.ServiceSplitterConfigEntry{
-					Kind: structs.ServiceSplitter,
-					Name: "main",
-					Splits: []structs.ServiceSplit{
-						{Weight: 100},
-					},
-				}
-				return s.EnsureConfigEntry(0, entry)
+			opAdd: &structs.ServiceSplitterConfigEntry{
+				Kind: structs.ServiceSplitter,
+				Name: "main",
+				Splits: []structs.ServiceSplit{
+					{Weight: 100},
+				},
 			},
 			expectErr:      "does not permit advanced routing or splitting behavior",
 			expectGraphErr: true,
@@ -873,15 +993,12 @@ func TestStore_ConfigEntry_GraphValidation(t *testing.T) {
 					Protocol: "tcp",
 				},
 			},
-			op: func(t *testing.T, s *Store) error {
-				entry := &structs.ServiceSplitterConfigEntry{
-					Kind: structs.ServiceSplitter,
-					Name: "main",
-					Splits: []structs.ServiceSplit{
-						{Weight: 100},
-					},
-				}
-				return s.EnsureConfigEntry(0, entry)
+			opAdd: &structs.ServiceSplitterConfigEntry{
+				Kind: structs.ServiceSplitter,
+				Name: "main",
+				Splits: []structs.ServiceSplit{
+					{Weight: 100},
+				},
 			},
 			expectErr:      "does not permit advanced routing or splitting behavior",
 			expectGraphErr: true,
@@ -914,17 +1031,14 @@ func TestStore_ConfigEntry_GraphValidation(t *testing.T) {
 					},
 				},
 			},
-			op: func(t *testing.T, s *Store) error {
-				entry := &structs.ServiceSplitterConfigEntry{
-					Kind: structs.ServiceSplitter,
-					Name: "main",
-					Splits: []structs.ServiceSplit{
-						{Weight: 90, ServiceSubset: "v1"},
-						{Weight: 10, ServiceSubset: "v2"},
-					},
-					EnterpriseMeta: *structs.DefaultEnterpriseMetaInDefaultPartition(),
-				}
-				return s.EnsureConfigEntry(0, entry)
+			opAdd: &structs.ServiceSplitterConfigEntry{
+				Kind: structs.ServiceSplitter,
+				Name: "main",
+				Splits: []structs.ServiceSplit{
+					{Weight: 90, ServiceSubset: "v1"},
+					{Weight: 10, ServiceSubset: "v2"},
+				},
+				EnterpriseMeta: *structs.DefaultEnterpriseMetaInDefaultPartition(),
 			},
 		},
 		"splitter works with http protocol (from proxy-defaults)": {
@@ -949,16 +1063,13 @@ func TestStore_ConfigEntry_GraphValidation(t *testing.T) {
 					},
 				},
 			},
-			op: func(t *testing.T, s *Store) error {
-				entry := &structs.ServiceSplitterConfigEntry{
-					Kind: structs.ServiceSplitter,
-					Name: "main",
-					Splits: []structs.ServiceSplit{
-						{Weight: 90, ServiceSubset: "v1"},
-						{Weight: 10, ServiceSubset: "v2"},
-					},
-				}
-				return s.EnsureConfigEntry(0, entry)
+			opAdd: &structs.ServiceSplitterConfigEntry{
+				Kind: structs.ServiceSplitter,
+				Name: "main",
+				Splits: []structs.ServiceSplit{
+					{Weight: 90, ServiceSubset: "v1"},
+					{Weight: 10, ServiceSubset: "v2"},
+				},
 			},
 		},
 		"router fails with tcp protocol": {
@@ -978,24 +1089,21 @@ func TestStore_ConfigEntry_GraphValidation(t *testing.T) {
 					},
 				},
 			},
-			op: func(t *testing.T, s *Store) error {
-				entry := &structs.ServiceRouterConfigEntry{
-					Kind: structs.ServiceRouter,
-					Name: "main",
-					Routes: []structs.ServiceRoute{
-						{
-							Match: &structs.ServiceRouteMatch{
-								HTTP: &structs.ServiceRouteHTTPMatch{
-									PathExact: "/other",
-								},
-							},
-							Destination: &structs.ServiceRouteDestination{
-								ServiceSubset: "other",
+			opAdd: &structs.ServiceRouterConfigEntry{
+				Kind: structs.ServiceRouter,
+				Name: "main",
+				Routes: []structs.ServiceRoute{
+					{
+						Match: &structs.ServiceRouteMatch{
+							HTTP: &structs.ServiceRouteHTTPMatch{
+								PathExact: "/other",
 							},
 						},
+						Destination: &structs.ServiceRouteDestination{
+							ServiceSubset: "other",
+						},
 					},
-				}
-				return s.EnsureConfigEntry(0, entry)
+				},
 			},
 			expectErr:      "does not permit advanced routing or splitting behavior",
 			expectGraphErr: true,
@@ -1012,24 +1120,21 @@ func TestStore_ConfigEntry_GraphValidation(t *testing.T) {
 					},
 				},
 			},
-			op: func(t *testing.T, s *Store) error {
-				entry := &structs.ServiceRouterConfigEntry{
-					Kind: structs.ServiceRouter,
-					Name: "main",
-					Routes: []structs.ServiceRoute{
-						{
-							Match: &structs.ServiceRouteMatch{
-								HTTP: &structs.ServiceRouteHTTPMatch{
-									PathExact: "/other",
-								},
-							},
-							Destination: &structs.ServiceRouteDestination{
-								ServiceSubset: "other",
+			opAdd: &structs.ServiceRouterConfigEntry{
+				Kind: structs.ServiceRouter,
+				Name: "main",
+				Routes: []structs.ServiceRoute{
+					{
+						Match: &structs.ServiceRouteMatch{
+							HTTP: &structs.ServiceRouteHTTPMatch{
+								PathExact: "/other",
 							},
 						},
+						Destination: &structs.ServiceRouteDestination{
+							ServiceSubset: "other",
+						},
 					},
-				}
-				return s.EnsureConfigEntry(0, entry)
+				},
 			},
 			expectErr:      "does not permit advanced routing or splitting behavior",
 			expectGraphErr: true,
@@ -1063,9 +1168,7 @@ func TestStore_ConfigEntry_GraphValidation(t *testing.T) {
 					},
 				},
 			},
-			op: func(t *testing.T, s *Store) error {
-				return s.DeleteConfigEntry(0, structs.ServiceDefaults, "main", nil)
-			},
+			opDelete:       configentry.NewKindName(structs.ServiceDefaults, "main", nil),
 			expectErr:      "does not permit advanced routing or splitting behavior",
 			expectGraphErr: true,
 		},
@@ -1099,9 +1202,7 @@ func TestStore_ConfigEntry_GraphValidation(t *testing.T) {
 					},
 				},
 			},
-			op: func(t *testing.T, s *Store) error {
-				return s.DeleteConfigEntry(0, structs.ProxyDefaults, structs.ProxyConfigGlobal, nil)
-			},
+			opDelete:       configentry.NewKindName(structs.ProxyDefaults, structs.ProxyConfigGlobal, nil),
 			expectErr:      "does not permit advanced routing or splitting behavior",
 			expectGraphErr: true,
 		},
@@ -1140,9 +1241,7 @@ func TestStore_ConfigEntry_GraphValidation(t *testing.T) {
 					},
 				},
 			},
-			op: func(t *testing.T, s *Store) error {
-				return s.DeleteConfigEntry(0, structs.ProxyDefaults, structs.ProxyConfigGlobal, nil)
-			},
+			opDelete: configentry.NewKindName(structs.ProxyDefaults, structs.ProxyConfigGlobal, nil),
 		},
 		"cannot change to tcp protocol after splitter created": {
 			entries: []structs.ConfigEntry{
@@ -1172,13 +1271,10 @@ func TestStore_ConfigEntry_GraphValidation(t *testing.T) {
 					},
 				},
 			},
-			op: func(t *testing.T, s *Store) error {
-				entry := &structs.ServiceConfigEntry{
-					Kind:     structs.ServiceDefaults,
-					Name:     "main",
-					Protocol: "tcp",
-				}
-				return s.EnsureConfigEntry(0, entry)
+			opAdd: &structs.ServiceConfigEntry{
+				Kind:     structs.ServiceDefaults,
+				Name:     "main",
+				Protocol: "tcp",
 			},
 			expectErr:      "does not permit advanced routing or splitting behavior",
 			expectGraphErr: true,
@@ -1216,9 +1312,7 @@ func TestStore_ConfigEntry_GraphValidation(t *testing.T) {
 					},
 				},
 			},
-			op: func(t *testing.T, s *Store) error {
-				return s.DeleteConfigEntry(0, structs.ServiceDefaults, "main", nil)
-			},
+			opDelete:       configentry.NewKindName(structs.ServiceDefaults, "main", nil),
 			expectErr:      "does not permit advanced routing or splitting behavior",
 			expectGraphErr: true,
 		},
@@ -1255,13 +1349,10 @@ func TestStore_ConfigEntry_GraphValidation(t *testing.T) {
 					},
 				},
 			},
-			op: func(t *testing.T, s *Store) error {
-				entry := &structs.ServiceConfigEntry{
-					Kind:     structs.ServiceDefaults,
-					Name:     "main",
-					Protocol: "tcp",
-				}
-				return s.EnsureConfigEntry(0, entry)
+			opAdd: &structs.ServiceConfigEntry{
+				Kind:     structs.ServiceDefaults,
+				Name:     "main",
+				Protocol: "tcp",
 			},
 			expectErr:      "does not permit advanced routing or splitting behavior",
 			expectGraphErr: true,
@@ -1280,16 +1371,13 @@ func TestStore_ConfigEntry_GraphValidation(t *testing.T) {
 					Protocol: "tcp",
 				},
 			},
-			op: func(t *testing.T, s *Store) error {
-				entry := &structs.ServiceSplitterConfigEntry{
-					Kind: structs.ServiceSplitter,
-					Name: "main",
-					Splits: []structs.ServiceSplit{
-						{Weight: 90},
-						{Weight: 10, Service: "other"},
-					},
-				}
-				return s.EnsureConfigEntry(0, entry)
+			opAdd: &structs.ServiceSplitterConfigEntry{
+				Kind: structs.ServiceSplitter,
+				Name: "main",
+				Splits: []structs.ServiceSplit{
+					{Weight: 90},
+					{Weight: 10, Service: "other"},
+				},
 			},
 			expectErr:      "uses inconsistent protocols",
 			expectGraphErr: true,
@@ -1307,24 +1395,21 @@ func TestStore_ConfigEntry_GraphValidation(t *testing.T) {
 					Protocol: "tcp",
 				},
 			},
-			op: func(t *testing.T, s *Store) error {
-				entry := &structs.ServiceRouterConfigEntry{
-					Kind: structs.ServiceRouter,
-					Name: "main",
-					Routes: []structs.ServiceRoute{
-						{
-							Match: &structs.ServiceRouteMatch{
-								HTTP: &structs.ServiceRouteHTTPMatch{
-									PathExact: "/other",
-								},
-							},
-							Destination: &structs.ServiceRouteDestination{
-								Service: "other",
+			opAdd: &structs.ServiceRouterConfigEntry{
+				Kind: structs.ServiceRouter,
+				Name: "main",
+				Routes: []structs.ServiceRoute{
+					{
+						Match: &structs.ServiceRouteMatch{
+							HTTP: &structs.ServiceRouteHTTPMatch{
+								PathExact: "/other",
 							},
 						},
+						Destination: &structs.ServiceRouteDestination{
+							Service: "other",
+						},
 					},
-				}
-				return s.EnsureConfigEntry(0, entry)
+				},
 			},
 			expectErr:      "uses inconsistent protocols",
 			expectGraphErr: true,
@@ -1348,17 +1433,14 @@ func TestStore_ConfigEntry_GraphValidation(t *testing.T) {
 					ConnectTimeout: 33 * time.Second,
 				},
 			},
-			op: func(t *testing.T, s *Store) error {
-				entry := &structs.ServiceResolverConfigEntry{
-					Kind: structs.ServiceResolver,
-					Name: "main",
-					Failover: map[string]structs.ServiceResolverFailover{
-						"*": {
-							Service: "other",
-						},
+			opAdd: &structs.ServiceResolverConfigEntry{
+				Kind: structs.ServiceResolver,
+				Name: "main",
+				Failover: map[string]structs.ServiceResolverFailover{
+					"*": {
+						Service: "other",
 					},
-				}
-				return s.EnsureConfigEntry(0, entry)
+				},
 			},
 			expectErr:      "uses inconsistent protocols",
 			expectGraphErr: true,
@@ -1381,15 +1463,12 @@ func TestStore_ConfigEntry_GraphValidation(t *testing.T) {
 					ConnectTimeout: 33 * time.Second,
 				},
 			},
-			op: func(t *testing.T, s *Store) error {
-				entry := &structs.ServiceResolverConfigEntry{
-					Kind: structs.ServiceResolver,
-					Name: "main",
-					Redirect: &structs.ServiceResolverRedirect{
-						Service: "other",
-					},
-				}
-				return s.EnsureConfigEntry(0, entry)
+			opAdd: &structs.ServiceResolverConfigEntry{
+				Kind: structs.ServiceResolver,
+				Name: "main",
+				Redirect: &structs.ServiceResolverRedirect{
+					Service: "other",
+				},
 			},
 			expectErr:      "uses inconsistent protocols",
 			expectGraphErr: true,
@@ -1408,16 +1487,13 @@ func TestStore_ConfigEntry_GraphValidation(t *testing.T) {
 					},
 				},
 			},
-			op: func(t *testing.T, s *Store) error {
-				entry := &structs.ServiceResolverConfigEntry{
-					Kind: structs.ServiceResolver,
-					Name: "main",
-					Redirect: &structs.ServiceResolverRedirect{
-						Service:       "other",
-						ServiceSubset: "v1",
-					},
-				}
-				return s.EnsureConfigEntry(0, entry)
+			opAdd: &structs.ServiceResolverConfigEntry{
+				Kind: structs.ServiceResolver,
+				Name: "main",
+				Redirect: &structs.ServiceResolverRedirect{
+					Service:       "other",
+					ServiceSubset: "v1",
+				},
 			},
 		},
 		"cannot redirect to a subset that does not exist": {
@@ -1428,16 +1504,13 @@ func TestStore_ConfigEntry_GraphValidation(t *testing.T) {
 					ConnectTimeout: 33 * time.Second,
 				},
 			},
-			op: func(t *testing.T, s *Store) error {
-				entry := &structs.ServiceResolverConfigEntry{
-					Kind: structs.ServiceResolver,
-					Name: "main",
-					Redirect: &structs.ServiceResolverRedirect{
-						Service:       "other",
-						ServiceSubset: "v1",
-					},
-				}
-				return s.EnsureConfigEntry(0, entry)
+			opAdd: &structs.ServiceResolverConfigEntry{
+				Kind: structs.ServiceResolver,
+				Name: "main",
+				Redirect: &structs.ServiceResolverRedirect{
+					Service:       "other",
+					ServiceSubset: "v1",
+				},
 			},
 			expectErr:      `does not have a subset named "v1"`,
 			expectGraphErr: true,
@@ -1453,15 +1526,12 @@ func TestStore_ConfigEntry_GraphValidation(t *testing.T) {
 					},
 				},
 			},
-			op: func(t *testing.T, s *Store) error {
-				entry := &structs.ServiceResolverConfigEntry{
-					Kind: structs.ServiceResolver,
-					Name: "main",
-					Redirect: &structs.ServiceResolverRedirect{
-						Service: "other",
-					},
-				}
-				return s.EnsureConfigEntry(0, entry)
+			opAdd: &structs.ServiceResolverConfigEntry{
+				Kind: structs.ServiceResolver,
+				Name: "main",
+				Redirect: &structs.ServiceResolverRedirect{
+					Service: "other",
+				},
 			},
 			expectErr:      `detected circular resolver redirect`,
 			expectGraphErr: true,
@@ -1483,45 +1553,395 @@ func TestStore_ConfigEntry_GraphValidation(t *testing.T) {
 					},
 				},
 			},
-			op: func(t *testing.T, s *Store) error {
-				entry := &structs.ServiceSplitterConfigEntry{
-					Kind: "service-splitter",
-					Name: "main",
-					Splits: []structs.ServiceSplit{
-						{Weight: 100, Service: "other"},
-					},
-				}
-				return s.EnsureConfigEntry(0, entry)
+			opAdd: &structs.ServiceSplitterConfigEntry{
+				Kind: "service-splitter",
+				Name: "main",
+				Splits: []structs.ServiceSplit{
+					{Weight: 100, Service: "other"},
+				},
 			},
 			expectErr:      `detected circular reference`,
 			expectGraphErr: true,
 		},
+		/////////////////////////////////////////////////
+		"cannot peer export cross-dc redirect": {
+			entries: []structs.ConfigEntry{
+				&structs.ServiceResolverConfigEntry{
+					Kind: "service-resolver",
+					Name: "main",
+					Redirect: &structs.ServiceResolverRedirect{
+						Datacenter: "dc3",
+					},
+				},
+			},
+			opAdd: &structs.ExportedServicesConfigEntry{
+				Name: "default",
+				Services: []structs.ExportedService{{
+					Name:      "main",
+					Consumers: []structs.ServiceConsumer{{Peer: "my-peer"}},
+				}},
+			},
+			expectErr: `contains cross-datacenter resolver redirect`,
+		},
+		"cannot peer export cross-dc redirect via wildcard": {
+			entries: []structs.ConfigEntry{
+				&structs.ServiceResolverConfigEntry{
+					Kind: "service-resolver",
+					Name: "main",
+					Redirect: &structs.ServiceResolverRedirect{
+						Datacenter: "dc3",
+					},
+				},
+			},
+			opAdd: &structs.ExportedServicesConfigEntry{
+				Name: "default",
+				Services: []structs.ExportedService{{
+					Name:      "*",
+					Consumers: []structs.ServiceConsumer{{Peer: "my-peer"}},
+				}},
+			},
+			expectErr: `contains cross-datacenter resolver redirect`,
+		},
+		"cannot peer export cross-dc failover": {
+			entries: []structs.ConfigEntry{
+				&structs.ServiceResolverConfigEntry{
+					Kind: "service-resolver",
+					Name: "main",
+					Failover: map[string]structs.ServiceResolverFailover{
+						"*": {
+							Datacenters: []string{"dc3"},
+						},
+					},
+				},
+			},
+			opAdd: &structs.ExportedServicesConfigEntry{
+				Name: "default",
+				Services: []structs.ExportedService{{
+					Name:      "main",
+					Consumers: []structs.ServiceConsumer{{Peer: "my-peer"}},
+				}},
+			},
+			expectErr: `contains cross-datacenter failover`,
+		},
+		"cannot peer export cross-dc failover via wildcard": {
+			entries: []structs.ConfigEntry{
+				&structs.ServiceResolverConfigEntry{
+					Kind: "service-resolver",
+					Name: "main",
+					Failover: map[string]structs.ServiceResolverFailover{
+						"*": {
+							Datacenters: []string{"dc3"},
+						},
+					},
+				},
+			},
+			opAdd: &structs.ExportedServicesConfigEntry{
+				Name: "default",
+				Services: []structs.ExportedService{{
+					Name:      "*",
+					Consumers: []structs.ServiceConsumer{{Peer: "my-peer"}},
+				}},
+			},
+			expectErr: `contains cross-datacenter failover`,
+		},
+		"cannot redirect a peer exported tcp service": {
+			entries: []structs.ConfigEntry{
+				&structs.ExportedServicesConfigEntry{
+					Name: "default",
+					Services: []structs.ExportedService{{
+						Name:      "main",
+						Consumers: []structs.ServiceConsumer{{Peer: "my-peer"}},
+					}},
+				},
+			},
+			opAdd: &structs.ServiceResolverConfigEntry{
+				Kind: structs.ServiceResolver,
+				Name: "main",
+				Redirect: &structs.ServiceResolverRedirect{
+					Service: "other",
+				},
+			},
+			expectErr: `cannot introduce new discovery chain targets like`,
+		},
+		"can redirect a peer exported http service to another service": {
+			entries: []structs.ConfigEntry{
+				&structs.ServiceConfigEntry{
+					Kind:     structs.ServiceDefaults,
+					Name:     "main",
+					Protocol: "http",
+				},
+				&structs.ServiceConfigEntry{
+					Kind:     structs.ServiceDefaults,
+					Name:     "other",
+					Protocol: "http",
+				},
+				&structs.ExportedServicesConfigEntry{
+					Name: "default",
+					Services: []structs.ExportedService{{
+						Name:      "main",
+						Consumers: []structs.ServiceConsumer{{Peer: "my-peer"}},
+					}},
+				},
+			},
+			opAdd: &structs.ServiceResolverConfigEntry{
+				Kind: structs.ServiceResolver,
+				Name: "main",
+				Redirect: &structs.ServiceResolverRedirect{
+					Service: "other",
+				},
+			},
+		},
+		"cannot redirect a peer exported http service to another peer service": {
+			entries: []structs.ConfigEntry{
+				&structs.ServiceConfigEntry{
+					Kind:     structs.ServiceDefaults,
+					Name:     "main",
+					Protocol: "http",
+				},
+				&structs.ExportedServicesConfigEntry{
+					Name: "default",
+					Services: []structs.ExportedService{{
+						Name:      "main",
+						Consumers: []structs.ServiceConsumer{{Peer: "my-peer"}},
+					}},
+				},
+			},
+			opAdd: &structs.ServiceResolverConfigEntry{
+				Kind: structs.ServiceResolver,
+				Name: "main",
+				Redirect: &structs.ServiceResolverRedirect{
+					Service: "other",
+					Peer:    "something",
+				},
+			},
+			expectErr: `contains cross-peer resolver redirect`,
+		},
+		"cannot redirect a peer exported http service to a service in another datacenter": {
+			entries: []structs.ConfigEntry{
+				&structs.ServiceConfigEntry{
+					Kind:     structs.ServiceDefaults,
+					Name:     "main",
+					Protocol: "http",
+				},
+				&structs.ServiceConfigEntry{
+					Kind:     structs.ServiceDefaults,
+					Name:     "other",
+					Protocol: "http",
+				},
+				&structs.ExportedServicesConfigEntry{
+					Name: "default",
+					Services: []structs.ExportedService{{
+						Name:      "main",
+						Consumers: []structs.ServiceConsumer{{Peer: "my-peer"}},
+					}},
+				},
+			},
+			opAdd: &structs.ServiceResolverConfigEntry{
+				Kind: structs.ServiceResolver,
+				Name: "main",
+				Redirect: &structs.ServiceResolverRedirect{
+					Service:    "other",
+					Datacenter: "dc12",
+				},
+			},
+			expectErr: `contains cross-datacenter resolver redirect`,
+		},
+		"can failover a peer exported http service to another service": {
+			entries: []structs.ConfigEntry{
+				&structs.ServiceConfigEntry{
+					Kind:     structs.ServiceDefaults,
+					Name:     "main",
+					Protocol: "http",
+				},
+				&structs.ServiceConfigEntry{
+					Kind:     structs.ServiceDefaults,
+					Name:     "other",
+					Protocol: "http",
+				},
+				&structs.ExportedServicesConfigEntry{
+					Name: "default",
+					Services: []structs.ExportedService{{
+						Name:      "main",
+						Consumers: []structs.ServiceConsumer{{Peer: "my-peer"}},
+					}},
+				},
+			},
+			opAdd: &structs.ServiceResolverConfigEntry{
+				Kind: structs.ServiceResolver,
+				Name: "main",
+				Failover: map[string]structs.ServiceResolverFailover{
+					"*": {
+						Service: "other",
+					},
+				},
+			},
+		},
+		"can failover a peer exported http service to another peer service": {
+			entries: []structs.ConfigEntry{
+				&structs.ServiceConfigEntry{
+					Kind:     structs.ServiceDefaults,
+					Name:     "main",
+					Protocol: "http",
+				},
+				&structs.ExportedServicesConfigEntry{
+					Name: "default",
+					Services: []structs.ExportedService{{
+						Name:      "main",
+						Consumers: []structs.ServiceConsumer{{Peer: "my-peer"}},
+					}},
+				},
+			},
+			opAdd: &structs.ServiceResolverConfigEntry{
+				Kind: structs.ServiceResolver,
+				Name: "main",
+				Failover: map[string]structs.ServiceResolverFailover{
+					"*": {
+						Targets: []structs.ServiceResolverFailoverTarget{
+							{
+								Service: "other",
+								Peer:    "some-peer",
+							},
+						},
+					},
+				},
+			},
+		},
+		"can't failover a peer exported http service to another service in a different datacenter": {
+			entries: []structs.ConfigEntry{
+				&structs.ServiceConfigEntry{
+					Kind:     structs.ServiceDefaults,
+					Name:     "main",
+					Protocol: "http",
+				},
+				&structs.ServiceConfigEntry{
+					Kind:     structs.ServiceDefaults,
+					Name:     "other",
+					Protocol: "http",
+				},
+				&structs.ExportedServicesConfigEntry{
+					Name: "default",
+					Services: []structs.ExportedService{{
+						Name:      "main",
+						Consumers: []structs.ServiceConsumer{{Peer: "my-peer"}},
+					}},
+				},
+			},
+			opAdd: &structs.ServiceResolverConfigEntry{
+				Kind: structs.ServiceResolver,
+				Name: "main",
+				Failover: map[string]structs.ServiceResolverFailover{
+					"*": {
+						Service:     "other",
+						Datacenters: []string{"dc12"},
+					},
+				},
+			},
+			expectErr: `contains cross-datacenter failover`,
+		},
+		"can't failover a peer exported http service to another service in a different datacenter using targets": {
+			entries: []structs.ConfigEntry{
+				&structs.ServiceConfigEntry{
+					Kind:     structs.ServiceDefaults,
+					Name:     "main",
+					Protocol: "http",
+				},
+				&structs.ServiceConfigEntry{
+					Kind:     structs.ServiceDefaults,
+					Name:     "other",
+					Protocol: "http",
+				},
+				&structs.ExportedServicesConfigEntry{
+					Name: "default",
+					Services: []structs.ExportedService{{
+						Name:      "main",
+						Consumers: []structs.ServiceConsumer{{Peer: "my-peer"}},
+					}},
+				},
+			},
+			opAdd: &structs.ServiceResolverConfigEntry{
+				Kind: structs.ServiceResolver,
+				Name: "main",
+				Failover: map[string]structs.ServiceResolverFailover{
+					"*": {
+						Targets: []structs.ServiceResolverFailoverTarget{
+							{
+								Service:    "other",
+								Datacenter: "dc12",
+							},
+						},
+					},
+				},
+			},
+			expectErr: `contains cross-datacenter failover`,
+		},
+		"can failover a peer exported tcp service": {
+			entries: []structs.ConfigEntry{
+				&structs.ExportedServicesConfigEntry{
+					Name: "default",
+					Services: []structs.ExportedService{{
+						Name:      "main",
+						Consumers: []structs.ServiceConsumer{{Peer: "my-peer"}},
+					}},
+				},
+			},
+			opAdd: &structs.ServiceResolverConfigEntry{
+				Kind: structs.ServiceResolver,
+				Name: "main",
+				Failover: map[string]structs.ServiceResolverFailover{
+					"*": {
+						Targets: []structs.ServiceResolverFailoverTarget{
+							{
+								Service: "other",
+							},
+							{
+								Service: "other",
+								Peer:    "cluster-01",
+							},
+						},
+					},
+				},
+			},
+		},
+		"can failover a peer exported tcp service from a redirect": {
+			entries: []structs.ConfigEntry{
+				&structs.ExportedServicesConfigEntry{
+					Name: "default",
+					Services: []structs.ExportedService{{
+						Name:      "main",
+						Consumers: []structs.ServiceConsumer{{Peer: "my-peer"}},
+					}},
+				},
+				&structs.ServiceResolverConfigEntry{
+					Kind: structs.ServiceResolver,
+					Name: "other",
+					Redirect: &structs.ServiceResolverRedirect{
+						Service: "main",
+					},
+				},
+			},
+			opAdd: &structs.ServiceResolverConfigEntry{
+				Kind: structs.ServiceResolver,
+				Name: "main",
+				Failover: map[string]structs.ServiceResolverFailover{
+					"*": {
+						Targets: []structs.ServiceResolverFailoverTarget{
+							{
+								Service: "another",
+							},
+							{
+								Service: "other",
+								Peer:    "cluster-01",
+							},
+						},
+					},
+				},
+			},
+		},
 	}
 
 	for name, tc := range cases {
-		name := name
-		tc := tc
-
 		t.Run(name, func(t *testing.T) {
-			s := testConfigStateStore(t)
-			for _, entry := range tc.entries {
-				require.NoError(t, entry.Normalize())
-				require.NoError(t, s.EnsureConfigEntry(0, entry))
-			}
-
-			err := tc.op(t, s)
-			if tc.expectErr != "" {
-				require.Error(t, err)
-				require.Contains(t, err.Error(), tc.expectErr)
-				_, ok := err.(*structs.ConfigEntryGraphError)
-				if tc.expectGraphErr {
-					require.True(t, ok, "%T is not a *ConfigEntryGraphError", err)
-				} else {
-					require.False(t, ok, "did not expect a *ConfigEntryGraphError here: %v", err)
-				}
-			} else {
-				require.NoError(t, err)
-			}
+			run(t, tc)
 		})
 	}
 }
@@ -1926,6 +2346,53 @@ func TestStore_ReadDiscoveryChainConfigEntries_SubsetSplit(t *testing.T) {
 	require.Len(t, entrySet.Splitters, 1)
 	require.Len(t, entrySet.Resolvers, 1)
 	require.Len(t, entrySet.Services, 1)
+}
+
+func TestStore_ReadDiscoveryChainConfigEntries_FetchPeers(t *testing.T) {
+	s := testConfigStateStore(t)
+
+	entries := []structs.ConfigEntry{
+		&structs.ServiceConfigEntry{
+			Kind:     structs.ServiceDefaults,
+			Name:     "main",
+			Protocol: "http",
+		},
+		&structs.ServiceResolverConfigEntry{
+			Kind: structs.ServiceResolver,
+			Name: "main",
+			Failover: map[string]structs.ServiceResolverFailover{
+				"*": {
+					Targets: []structs.ServiceResolverFailoverTarget{
+						{Peer: "cluster-01"},
+						{Peer: "cluster-02"}, // Non-existant
+					},
+				},
+			},
+		},
+	}
+
+	for _, entry := range entries {
+		require.NoError(t, s.EnsureConfigEntry(0, entry))
+	}
+
+	cluster01Peering := &pbpeering.Peering{
+		ID:   testFooPeerID,
+		Name: "cluster-01",
+	}
+	err := s.PeeringWrite(0, &pbpeering.PeeringWriteRequest{Peering: cluster01Peering})
+	require.NoError(t, err)
+
+	_, entrySet, err := s.readDiscoveryChainConfigEntries(nil, "main", nil, nil)
+	require.NoError(t, err)
+
+	require.Len(t, entrySet.Routers, 0)
+	require.Len(t, entrySet.Splitters, 0)
+	require.Len(t, entrySet.Resolvers, 1)
+	require.Len(t, entrySet.Services, 1)
+	prototest.AssertDeepEqual(t, entrySet.Peers, map[string]*pbpeering.Peering{
+		"cluster-01": cluster01Peering,
+		"cluster-02": nil,
+	})
 }
 
 // TODO(rb): add ServiceIntentions tests
@@ -2845,4 +3312,405 @@ func TestStore_ValidateServiceIntentionsErrorOnIncompatibleProtocols(t *testing.
 			}
 		})
 	}
+}
+
+func TestStateStore_ConfigEntry_VirtualIP(t *testing.T) {
+	createServiceInstance := func(t *testing.T, s *Store, name string) {
+		ns1 := &structs.NodeService{
+			ID:      name,
+			Service: name,
+			Address: "1.1.1.1",
+			Port:    1111,
+			Connect: structs.ServiceConnect{Native: true},
+		}
+		require.NoError(t, s.EnsureService(0, "node1", ns1))
+	}
+	deleteServiceInstance := func(t *testing.T, s *Store, name string) {
+		require.NoError(t, s.DeleteService(0, "node1", name, nil, ""))
+	}
+	createServiceResolver := func(t *testing.T, s *Store, name string) {
+		require.NoError(t, s.EnsureConfigEntry(0, &structs.ServiceResolverConfigEntry{
+			Kind: structs.ServiceResolver,
+			Name: name,
+		}))
+	}
+	createServiceRouter := func(t *testing.T, s *Store, name string) {
+		require.NoError(t, s.EnsureConfigEntry(0, &structs.ServiceRouterConfigEntry{
+			Kind: structs.ServiceRouter,
+			Name: name,
+		}))
+	}
+	createServiceSplitter := func(t *testing.T, s *Store, name string) {
+		require.NoError(t, s.EnsureConfigEntry(0, &structs.ServiceSplitterConfigEntry{
+			Kind: structs.ServiceSplitter,
+			Name: name,
+			Splits: []structs.ServiceSplit{
+				{Weight: 100},
+			},
+		}))
+	}
+	deleteConfigEntry := func(t *testing.T, s *Store, kind, name string) {
+		require.NoError(t, s.DeleteConfigEntry(0, kind, name, nil))
+	}
+	ensureVirtualIP := func(t *testing.T, s *Store, service string, value string) {
+		vip, err := s.VirtualIPForService(structs.PeeredServiceName{ServiceName: structs.ServiceName{Name: service}})
+		require.NoError(t, err)
+		require.Equal(t, value, vip)
+	}
+
+	testVIPStateStore := func(t *testing.T) *Store {
+		s := testStateStore(t)
+		setVirtualIPFlags(t, s)
+		testRegisterNode(t, s, 0, "node1")
+		s.EnsureConfigEntry(0, &structs.ProxyConfigEntry{
+			Kind: structs.ProxyDefaults,
+			Name: structs.ProxyConfigGlobal,
+			Config: map[string]interface{}{
+				"protocol": "http",
+			},
+		})
+		return s
+	}
+
+	cases := []struct {
+		kind       string
+		createFunc func(*testing.T, *Store, string)
+	}{
+		{
+			kind:       structs.ServiceResolver,
+			createFunc: createServiceResolver,
+		},
+		{
+			kind:       structs.ServiceRouter,
+			createFunc: createServiceRouter,
+		},
+		{
+			kind:       structs.ServiceSplitter,
+			createFunc: createServiceSplitter,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(fmt.Sprintf("create and delete %s with no service instances", tc.kind), func(t *testing.T) {
+			s := testVIPStateStore(t)
+
+			// Create unrelated service instance
+			createServiceInstance(t, s, "unrelated")
+
+			// Create the config entry and make sure a virtual ip is allocated
+			ensureVirtualIP(t, s, "foo", "")
+			tc.createFunc(t, s, "foo")
+			ensureVirtualIP(t, s, "foo", "240.0.0.2")
+
+			// Delete the config entry and make sure the virtual ip is freed and reused
+			ensureVirtualIP(t, s, "bar", "")
+			deleteConfigEntry(t, s, tc.kind, "foo")
+			ensureVirtualIP(t, s, "foo", "")
+			tc.createFunc(t, s, "bar")
+			ensureVirtualIP(t, s, "bar", "240.0.0.2")
+		})
+
+		t.Run(fmt.Sprintf("create and delete %s with service instances", tc.kind), func(t *testing.T) {
+			s := testVIPStateStore(t)
+
+			// Create a foo service instance and an unrelated service instance
+			createServiceInstance(t, s, "foo")
+
+			// Creating the config entry should not affect the service virtual IP
+			ensureVirtualIP(t, s, "foo", "240.0.0.1")
+			tc.createFunc(t, s, "foo")
+			ensureVirtualIP(t, s, "foo", "240.0.0.1")
+
+			// Deleting should also not affect the service virtual IP because there are still existing
+			// service instances that need the VIP.
+			deleteConfigEntry(t, s, tc.kind, "foo")
+			ensureVirtualIP(t, s, "foo", "240.0.0.1")
+
+			// Now delete the service instance, which should free up the virtual IP
+			deleteServiceInstance(t, s, "foo")
+			ensureVirtualIP(t, s, "foo", "")
+
+			// Make sure the free address can be reused
+			tc.createFunc(t, s, "bar")
+			ensureVirtualIP(t, s, "bar", "240.0.0.1")
+		})
+
+		t.Run(fmt.Sprintf("create and delete service instance while %s still exists", tc.kind), func(t *testing.T) {
+			s := testVIPStateStore(t)
+
+			// Create the config entry to get the virtual IP
+			tc.createFunc(t, s, "foo")
+			ensureVirtualIP(t, s, "foo", "240.0.0.1")
+
+			// Creating service instance should not affect virtual IP
+			createServiceInstance(t, s, "foo")
+			ensureVirtualIP(t, s, "foo", "240.0.0.1")
+
+			// Deleting should also not affect the service virtual IP because the config entry still exists.
+			deleteServiceInstance(t, s, "foo")
+			ensureVirtualIP(t, s, "foo", "240.0.0.1")
+
+			// Now delete the config entry, which should free up the ip
+			deleteConfigEntry(t, s, tc.kind, "foo")
+			ensureVirtualIP(t, s, "foo", "")
+
+			// Make sure the free address can be reused
+			tc.createFunc(t, s, "bar")
+			ensureVirtualIP(t, s, "bar", "240.0.0.1")
+		})
+	}
+}
+
+func TestStore_MutualTLSMode_Validation_InitialWrite(t *testing.T) {
+	cases := []struct {
+		// setup
+		mesh *structs.MeshConfigEntry
+
+		mtlsMode structs.MutualTLSMode
+		expErr   error
+	}{
+		// Mesh config entry does not exist. Should default to AllowEnablingPermissiveMutualTLS=false.
+		{
+			mtlsMode: structs.MutualTLSModeDefault,
+		},
+		{
+			mtlsMode: structs.MutualTLSModeStrict,
+		},
+		{
+			mtlsMode: structs.MutualTLSModePermissive,
+			expErr:   permissiveModeNotAllowedError,
+		},
+
+		// Mesh config entry contains AllowEnablingPermissiveMutualTLS=false
+		{
+			mesh:     &structs.MeshConfigEntry{},
+			mtlsMode: structs.MutualTLSModeDefault,
+		},
+		{
+			mesh:     &structs.MeshConfigEntry{},
+			mtlsMode: structs.MutualTLSModeStrict,
+		},
+		{
+			mesh:     &structs.MeshConfigEntry{},
+			mtlsMode: structs.MutualTLSModePermissive,
+			expErr:   permissiveModeNotAllowedError,
+		},
+
+		// Mesh config entry exists with AllowEnablingPermissiveMutualTLS=true.
+		{
+			mesh:     &structs.MeshConfigEntry{AllowEnablingPermissiveMutualTLS: true},
+			mtlsMode: structs.MutualTLSModeDefault,
+		},
+		{
+			mesh:     &structs.MeshConfigEntry{AllowEnablingPermissiveMutualTLS: true},
+			mtlsMode: structs.MutualTLSModeStrict,
+		},
+		{
+			mesh:     &structs.MeshConfigEntry{AllowEnablingPermissiveMutualTLS: true},
+			mtlsMode: structs.MutualTLSModePermissive,
+		},
+	}
+	for _, c := range cases {
+		c := c
+		var name string
+		if c.mesh == nil {
+			name = fmt.Sprintf("when mesh config entry not found")
+		} else {
+			name = fmt.Sprintf("when AllowEnablingPermissiveMutualTLS=%v", c.mesh.AllowEnablingPermissiveMutualTLS)
+		}
+		if c.expErr != nil {
+			name += " cannot"
+		} else {
+			name += " can"
+		}
+		name += fmt.Sprintf(" set MutualTLSMode=%q", c.mtlsMode)
+		t.Run(name, func(t *testing.T) {
+			s := testConfigStateStore(t)
+
+			var err error
+			var idx uint64
+			if c.mesh != nil {
+				idx, err = writeConfigAndBumpIndexForTest(s, idx, c.mesh)
+				require.NoError(t, err)
+			}
+
+			idx, err = writeConfigAndBumpIndexForTest(s, idx, &structs.ProxyConfigEntry{
+				Kind:          structs.ProxyDefaults,
+				Name:          structs.ProxyConfigGlobal,
+				MutualTLSMode: c.mtlsMode,
+			})
+			require.Equal(t, c.expErr, err)
+
+			_, err = writeConfigAndBumpIndexForTest(s, idx, &structs.ServiceConfigEntry{
+				Kind:          structs.ServiceDefaults,
+				Name:          "test-svc",
+				MutualTLSMode: c.mtlsMode,
+			})
+			require.Equal(t, c.expErr, err)
+		})
+	}
+}
+
+func TestStore_MutualTLSMode_Validation_SubsequentWrite(t *testing.T) {
+	cases := []struct {
+		allowPermissive bool
+		initialModes    []structs.MutualTLSMode
+		transitions     map[structs.MutualTLSMode]error
+	}{
+		{
+			allowPermissive: false,
+			initialModes: []structs.MutualTLSMode{
+				structs.MutualTLSModeDefault,
+				structs.MutualTLSModeStrict,
+			},
+			transitions: map[structs.MutualTLSMode]error{
+				structs.MutualTLSModeDefault: nil,
+				structs.MutualTLSModeStrict:  nil,
+				// Cannot transition from "" -> "permissive"
+				// Cannot transition from "strict" -> "permissive"
+				structs.MutualTLSModePermissive: permissiveModeNotAllowedError,
+			},
+		},
+		{
+			allowPermissive: false,
+			initialModes: []structs.MutualTLSMode{
+				structs.MutualTLSModePermissive,
+			},
+			transitions: map[structs.MutualTLSMode]error{
+				structs.MutualTLSModeDefault: nil,
+				structs.MutualTLSModeStrict:  nil,
+				// Can transition from "permissive" -> "permissive"
+				structs.MutualTLSModePermissive: nil,
+			},
+		},
+		{
+			allowPermissive: true,
+			initialModes: []structs.MutualTLSMode{
+				structs.MutualTLSModeDefault,
+				structs.MutualTLSModeStrict,
+				structs.MutualTLSModePermissive,
+			},
+			transitions: map[structs.MutualTLSMode]error{
+				// Can transition from any mode to any other mode when allowPermissive=true
+				structs.MutualTLSModeDefault:    nil,
+				structs.MutualTLSModeStrict:     nil,
+				structs.MutualTLSModePermissive: nil,
+			},
+		},
+	}
+	for _, c := range cases {
+		c := c
+
+		for _, initialMode := range c.initialModes {
+			for newMode, expErr := range c.transitions {
+				name := fmt.Sprintf("when AllowEnablingPermissiveMutualTLS=%v", c.allowPermissive)
+				if expErr != nil {
+					name += " cannot"
+				} else {
+					name += " can"
+				}
+				name += fmt.Sprintf(" transition MutualTLSMode from %q to %q", initialMode, newMode)
+				t.Run(name, func(t *testing.T) {
+					s := testConfigStateStore(t)
+
+					// Setup initial state.
+					idx, err := writeConfigAndBumpIndexForTest(s, 0, &structs.MeshConfigEntry{
+						AllowEnablingPermissiveMutualTLS: true, // set to true to allow writing any initial mode.
+					})
+					require.NoError(t, err)
+
+					idx, err = writeConfigAndBumpIndexForTest(s, idx, &structs.ProxyConfigEntry{
+						Kind:          structs.ProxyDefaults,
+						Name:          structs.ProxyConfigGlobal,
+						MutualTLSMode: initialMode,
+					})
+					require.NoError(t, err)
+
+					idx, err = writeConfigAndBumpIndexForTest(s, idx, &structs.ServiceConfigEntry{
+						Kind:          structs.ServiceDefaults,
+						Name:          "test-svc",
+						MutualTLSMode: initialMode,
+					})
+					require.NoError(t, err)
+
+					// Set AllowEnablingPermissiveMutualTLS for the test case.
+					idx, err = writeConfigAndBumpIndexForTest(s, idx, &structs.MeshConfigEntry{
+						AllowEnablingPermissiveMutualTLS: c.allowPermissive,
+					})
+					require.NoError(t, err)
+
+					// Test switching to the other mode.
+					idx, err = writeConfigAndBumpIndexForTest(s, idx, &structs.ProxyConfigEntry{
+						Kind:          structs.ProxyDefaults,
+						Name:          structs.ProxyConfigGlobal,
+						MutualTLSMode: newMode,
+					})
+					require.Equal(t, expErr, err)
+
+					_, err = writeConfigAndBumpIndexForTest(s, idx, &structs.ServiceConfigEntry{
+						Kind:          structs.ServiceDefaults,
+						Name:          "test-svc",
+						MutualTLSMode: newMode,
+					})
+					require.Equal(t, expErr, err)
+				})
+
+			}
+		}
+	}
+}
+
+func writeConfigAndBumpIndexForTest(s *Store, idx uint64, entry structs.ConfigEntry) (uint64, error) {
+	err := s.EnsureConfigEntry(idx, entry)
+	if err == nil {
+		idx++
+	}
+	return idx, err
+}
+
+func TestStateStore_DiscoveryChain_AttachVirtualIPs(t *testing.T) {
+	s := testStateStore(t)
+	setVirtualIPFlags(t, s)
+
+	ca := &structs.CAConfiguration{
+		Provider: "consul",
+	}
+	err := s.CASetConfig(0, ca)
+	require.NoError(t, err)
+
+	// Attempt to assign manual virtual IPs to a service that doesn't exist - should be a no-op.
+	psn := structs.PeeredServiceName{ServiceName: structs.ServiceName{Name: "foo", EnterpriseMeta: *acl.DefaultEnterpriseMeta()}}
+
+	// Register a service via config entry.
+	s.EnsureConfigEntry(1, &structs.ServiceResolverConfigEntry{
+		Kind: structs.ServiceResolver,
+		Name: "foo",
+	})
+
+	vip, err := s.VirtualIPForService(psn)
+	require.NoError(t, err)
+	assert.Equal(t, "240.0.0.1", vip)
+
+	// Assign manual virtual IPs for foo
+	found, _, err := s.AssignManualServiceVIPs(2, psn, []string{"2.2.2.2", "3.3.3.3"})
+	require.NoError(t, err)
+	require.True(t, found)
+
+	serviceVIP, err := s.ServiceManualVIPs(psn)
+	require.NoError(t, err)
+	require.Equal(t, uint64(2), serviceVIP.ModifyIndex)
+	require.Equal(t, "0.0.0.1", serviceVIP.IP.String())
+	require.Equal(t, []string{"2.2.2.2", "3.3.3.3"}, serviceVIP.ManualIPs)
+
+	req := discoverychain.CompileRequest{
+		ServiceName:          "foo",
+		EvaluateInNamespace:  psn.ServiceName.NamespaceOrDefault(),
+		EvaluateInPartition:  psn.ServiceName.PartitionOrDefault(),
+		EvaluateInDatacenter: "dc1",
+	}
+	idx, chain, _, err := s.ServiceDiscoveryChain(nil, "foo", structs.DefaultEnterpriseMetaInDefaultPartition(), req)
+	require.NoError(t, err)
+	require.Equal(t, uint64(1), idx)
+	require.Equal(t, []string{"240.0.0.1"}, chain.AutoVirtualIPs)
+	require.Equal(t, []string{"2.2.2.2", "3.3.3.3"}, chain.ManualVirtualIPs)
+
 }

@@ -1,6 +1,10 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package agent
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -58,7 +62,7 @@ func TestIntentionList(t *testing.T) {
 			}
 
 			var reply string
-			require.NoError(t, a.RPC("Intention.Apply", &req, &reply))
+			require.NoError(t, a.RPC(context.Background(), "Intention.Apply", &req, &reply))
 			ids = append(ids, reply)
 		}
 
@@ -162,7 +166,7 @@ func TestIntentionMatch(t *testing.T) {
 
 			// Create
 			var reply string
-			require.NoError(t, a.RPC("Intention.Apply", &ixn, &reply))
+			require.NoError(t, a.RPC(context.Background(), "Intention.Apply", &ixn, &reply))
 		}
 	}
 
@@ -302,7 +306,7 @@ func TestIntentionCheck(t *testing.T) {
 
 			// Create
 			var reply string
-			require.NoError(t, a.RPC("Intention.Apply", &ixn, &reply))
+			require.NoError(t, a.RPC(context.Background(), "Intention.Apply", &ixn, &reply))
 		}
 	}
 
@@ -349,6 +353,57 @@ func TestIntentionCheck(t *testing.T) {
 	})
 }
 
+func TestIntentionGetExact_PeerIntentions(t *testing.T) {
+	if testing.Short() {
+		t.Skip("too slow for testing.Short")
+	}
+
+	t.Parallel()
+
+	a := NewTestAgent(t, "")
+	testrpc.WaitForTestAgent(t, a.RPC, "dc1")
+
+	testutil.RunStep(t, "create a peer intentions", func(t *testing.T) {
+		configEntryIntention := structs.ServiceIntentionsConfigEntry{
+			Kind: structs.ServiceIntentions,
+			Name: "bar",
+			Sources: []*structs.SourceIntention{
+				{
+					Name:   "foo",
+					Peer:   "peer1",
+					Action: structs.IntentionActionAllow,
+				},
+			},
+		}
+
+		req, err := http.NewRequest("PUT", "/v1/config", jsonReader(configEntryIntention))
+		require.NoError(t, err)
+		resp := httptest.NewRecorder()
+
+		obj, err := a.srv.ConfigApply(resp, req)
+		require.NoError(t, err)
+
+		applied, ok := obj.(bool)
+		require.True(t, ok)
+		require.True(t, applied)
+	})
+
+	t.Run("get peer intention", func(t *testing.T) {
+		req, err := http.NewRequest("GET", "/v1/connect/intentions/exact?source=peer:peer1/foo&destination=bar", nil)
+		require.NoError(t, err)
+
+		resp := httptest.NewRecorder()
+		obj, err := a.srv.IntentionExact(resp, req)
+		require.NoError(t, err)
+		require.NotNil(t, obj)
+
+		value, ok := obj.(*structs.Intention)
+		require.True(t, ok)
+		require.Equal(t, "peer1", value.SourcePeer)
+		require.Equal(t, "foo", value.SourceName)
+		require.Equal(t, "bar", value.DestinationName)
+	})
+}
 func TestIntentionGetExact(t *testing.T) {
 	if testing.Short() {
 		t.Skip("too slow for testing.Short")
@@ -356,22 +411,22 @@ func TestIntentionGetExact(t *testing.T) {
 
 	t.Parallel()
 
-	hcl := `
-	bootstrap = false
-	bootstrap_expect = 2
-	server = true
-	`
+	a1 := NewTestAgent(t, `
+		bootstrap = true
+		server = true
+	`)
+	testrpc.WaitForTestAgent(t, a1.RPC, "dc1")
 
-	a1 := NewTestAgent(t, hcl)
-	a2 := NewTestAgent(t, hcl)
+	a2 := NewTestAgent(t, `
+		bootstrap = false
+		server = true
+	`)
 
-	_, err := a1.JoinLAN([]string{
-		fmt.Sprintf("127.0.0.1:%d", a2.Config.SerfPortLAN),
-	}, nil)
+	_, err := a2.JoinLAN([]string{fmt.Sprintf("127.0.0.1:%d", a1.Config.SerfPortLAN)}, nil)
 	require.NoError(t, err)
 
-	testrpc.WaitForTestAgent(t, a1.RPC, "dc1")
 	testrpc.WaitForTestAgent(t, a2.RPC, "dc1")
+
 	testrpc.WaitForLeader(t, a1.RPC, "dc1")
 	testrpc.WaitForLeader(t, a2.RPC, "dc1")
 
@@ -459,7 +514,7 @@ func TestIntentionPutExact(t *testing.T) {
 			}
 
 			var resp structs.IndexedIntentions
-			require.NoError(t, a.RPC("Intention.Get", req, &resp))
+			require.NoError(t, a.RPC(context.Background(), "Intention.Get", req, &resp))
 			require.Len(t, resp.Intentions, 1)
 			actual := resp.Intentions[0]
 			require.Equal(t, "foo", actual.SourceName)
@@ -506,7 +561,7 @@ func TestIntentionCreate(t *testing.T) {
 				IntentionID: value.ID,
 			}
 			var resp structs.IndexedIntentions
-			require.NoError(t, a.RPC("Intention.Get", req, &resp))
+			require.NoError(t, a.RPC(context.Background(), "Intention.Get", req, &resp))
 			require.Len(t, resp.Intentions, 1)
 			actual := resp.Intentions[0]
 			require.Equal(t, "foo", actual.SourceName)
@@ -556,7 +611,7 @@ func TestIntentionSpecificGet(t *testing.T) {
 			Op:         structs.IntentionOpCreate,
 			Intention:  ixn,
 		}
-		require.NoError(t, a.RPC("Intention.Apply", &req, &reply))
+		require.NoError(t, a.RPC(context.Background(), "Intention.Apply", &req, &reply))
 	}
 
 	t.Run("invalid id", func(t *testing.T) {
@@ -611,7 +666,7 @@ func TestIntentionSpecificUpdate(t *testing.T) {
 			Op:         structs.IntentionOpCreate,
 			Intention:  ixn,
 		}
-		require.NoError(t, a.RPC("Intention.Apply", &req, &reply))
+		require.NoError(t, a.RPC(context.Background(), "Intention.Apply", &req, &reply))
 	}
 
 	// Update the intention
@@ -632,7 +687,7 @@ func TestIntentionSpecificUpdate(t *testing.T) {
 			IntentionID: reply,
 		}
 		var resp structs.IndexedIntentions
-		require.NoError(t, a.RPC("Intention.Get", req, &resp))
+		require.NoError(t, a.RPC(context.Background(), "Intention.Get", req, &resp))
 		require.Len(t, resp.Intentions, 1)
 		actual := resp.Intentions[0]
 		require.Equal(t, "bar", actual.SourceName)
@@ -694,7 +749,7 @@ func TestIntentionDeleteExact(t *testing.T) {
 			Intention:  ixn,
 		}
 		var ignored string
-		require.NoError(t, a.RPC("Intention.Apply", &req, &ignored))
+		require.NoError(t, a.RPC(context.Background(), "Intention.Apply", &req, &ignored))
 	}
 
 	// Sanity check that the intention exists
@@ -704,7 +759,7 @@ func TestIntentionDeleteExact(t *testing.T) {
 			Exact:      exact,
 		}
 		var resp structs.IndexedIntentions
-		require.NoError(t, a.RPC("Intention.Get", req, &resp))
+		require.NoError(t, a.RPC(context.Background(), "Intention.Get", req, &resp))
 		require.Len(t, resp.Intentions, 1)
 		actual := resp.Intentions[0]
 		require.Equal(t, "foo", actual.SourceName)
@@ -748,7 +803,7 @@ func TestIntentionDeleteExact(t *testing.T) {
 				Exact:      exact,
 			}
 			var resp structs.IndexedIntentions
-			err := a.RPC("Intention.Get", req, &resp)
+			err := a.RPC(context.Background(), "Intention.Get", req, &resp)
 			testutil.RequireErrorContains(t, err, "not found")
 		}
 	})
@@ -789,7 +844,7 @@ func TestIntentionSpecificDelete(t *testing.T) {
 			Op:         structs.IntentionOpCreate,
 			Intention:  ixn,
 		}
-		require.NoError(t, a.RPC("Intention.Apply", &req, &reply))
+		require.NoError(t, a.RPC(context.Background(), "Intention.Apply", &req, &reply))
 	}
 
 	// Sanity check that the intention exists
@@ -799,7 +854,7 @@ func TestIntentionSpecificDelete(t *testing.T) {
 			IntentionID: reply,
 		}
 		var resp structs.IndexedIntentions
-		require.NoError(t, a.RPC("Intention.Get", req, &resp))
+		require.NoError(t, a.RPC(context.Background(), "Intention.Get", req, &resp))
 		require.Len(t, resp.Intentions, 1)
 		actual := resp.Intentions[0]
 		require.Equal(t, "foo", actual.SourceName)
@@ -819,7 +874,7 @@ func TestIntentionSpecificDelete(t *testing.T) {
 			IntentionID: reply,
 		}
 		var resp structs.IndexedIntentions
-		err := a.RPC("Intention.Get", req, &resp)
+		err := a.RPC(context.Background(), "Intention.Get", req, &resp)
 		testutil.RequireErrorContains(t, err, "not found")
 	}
 }
@@ -828,6 +883,8 @@ func TestParseIntentionStringComponent(t *testing.T) {
 	cases := []struct {
 		TestName     string
 		Input        string
+		AllowsPeers  bool
+		ExpectedPeer string
 		ExpectedAP   string
 		ExpectedNS   string
 		ExpectedName string
@@ -866,20 +923,47 @@ func TestParseIntentionStringComponent(t *testing.T) {
 			Input:    "uhoh/blah/foo/bar",
 			Err:      true,
 		},
+		{
+			TestName:     "peered without namespace",
+			Input:        "peer:peer1/service_name",
+			AllowsPeers:  true,
+			ExpectedPeer: "peer1",
+			ExpectedAP:   "",
+			ExpectedNS:   "",
+			ExpectedName: "service_name",
+		},
+		{
+			TestName: "need to specify at least a service",
+			Input:    "peer:peer1",
+			Err:      true,
+		},
+		{
+			TestName:    "peered not allowed error",
+			Input:       "peer:peer1/service_name",
+			AllowsPeers: false,
+			Err:         true,
+		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.TestName, func(t *testing.T) {
 			var entMeta acl.EnterpriseMeta
-			ap, ns, name, err := parseIntentionStringComponent(tc.Input, &entMeta)
+			parsed, err := parseIntentionStringComponent(tc.Input, &entMeta, tc.AllowsPeers)
 			if tc.Err {
 				require.Error(t, err)
 			} else {
 				require.NoError(t, err)
 
-				assert.Equal(t, tc.ExpectedAP, ap)
-				assert.Equal(t, tc.ExpectedNS, ns)
-				assert.Equal(t, tc.ExpectedName, name)
+				if tc.AllowsPeers {
+					assert.Equal(t, tc.ExpectedPeer, parsed.peer)
+					assert.Equal(t, "", parsed.ap)
+				} else {
+					assert.Equal(t, tc.ExpectedAP, parsed.ap)
+					assert.Equal(t, "", parsed.peer)
+				}
+
+				assert.Equal(t, tc.ExpectedNS, parsed.ns)
+				assert.Equal(t, tc.ExpectedName, parsed.name)
 			}
 		})
 	}

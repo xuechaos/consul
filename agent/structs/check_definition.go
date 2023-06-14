@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package structs
 
 import (
@@ -39,6 +42,7 @@ type CheckDefinition struct {
 	Shell                          string
 	GRPC                           string
 	GRPCUseTLS                     bool
+	OSService                      string
 	TLSServerName                  string
 	TLSSkipVerify                  bool
 	AliasNode                      string
@@ -220,6 +224,7 @@ func (c *CheckDefinition) CheckType() *CheckType {
 		Interval:                       c.Interval,
 		DockerContainerID:              c.DockerContainerID,
 		Shell:                          c.Shell,
+		OSService:                      c.OSService,
 		TLSServerName:                  c.TLSServerName,
 		TLSSkipVerify:                  c.TLSSkipVerify,
 		Timeout:                        c.Timeout,

@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package acl
 
 var (
@@ -164,6 +167,20 @@ func (s *staticAuthorizer) MeshRead(*AuthorizerContext) EnforcementDecision {
 }
 
 func (s *staticAuthorizer) MeshWrite(*AuthorizerContext) EnforcementDecision {
+	if s.defaultAllow {
+		return Allow
+	}
+	return Deny
+}
+
+func (s *staticAuthorizer) PeeringRead(*AuthorizerContext) EnforcementDecision {
+	if s.defaultAllow {
+		return Allow
+	}
+	return Deny
+}
+
+func (s *staticAuthorizer) PeeringWrite(*AuthorizerContext) EnforcementDecision {
 	if s.defaultAllow {
 		return Allow
 	}

@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package api
 
 import (
@@ -87,7 +90,7 @@ func TestAPI_CoordinateUpdate(t *testing.T) {
 	newCoord.Height = 0.5
 	entry := &CoordinateEntry{
 		Node:      node,
-		Partition: splitDefaultPartition,
+		Partition: defaultPartition,
 		Coord:     newCoord,
 	}
 	_, err = coord.Update(entry, nil)

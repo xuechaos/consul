@@ -1,12 +1,15 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package awsauth
 
 import (
 	"context"
 	"fmt"
 
+	iamauth "github.com/hashicorp/consul-awsauth"
 	"github.com/hashicorp/consul/agent/consul/authmethod"
 	"github.com/hashicorp/consul/agent/structs"
-	"github.com/hashicorp/consul/internal/iamauth"
 	"github.com/hashicorp/go-hclog"
 )
 

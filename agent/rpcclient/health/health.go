@@ -1,37 +1,33 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package health
 
 import (
 	"context"
 
+	"github.com/hashicorp/consul/agent/rpcclient"
+	"google.golang.org/grpc/connectivity"
+
 	"github.com/hashicorp/consul/agent/cache"
 	"github.com/hashicorp/consul/agent/structs"
 	"github.com/hashicorp/consul/agent/submatview"
-	"github.com/hashicorp/consul/proto/pbsubscribe"
+	"github.com/hashicorp/consul/proto/private/pbsubscribe"
 )
 
 // Client provides access to service health data.
 type Client struct {
-	NetRPC              NetRPC
-	Cache               CacheGetter
-	ViewStore           MaterializedViewStore
-	MaterializerDeps    MaterializerDeps
-	CacheName           string
-	UseStreamingBackend bool
-	QueryOptionDefaults func(options *structs.QueryOptions)
+	rpcclient.Client
 }
 
-type NetRPC interface {
-	RPC(method string, args interface{}, reply interface{}) error
-}
+// IsReadyForStreaming will indicate if the underlying gRPC connection is ready.
+func (c *Client) IsReadyForStreaming() bool {
+	conn := c.MaterializerDeps.Conn
+	if conn == nil {
+		return false
+	}
 
-type CacheGetter interface {
-	Get(ctx context.Context, t string, r cache.Request) (interface{}, cache.ResultMeta, error)
-	NotifyCallback(ctx context.Context, t string, r cache.Request, cID string, cb cache.Callback) error
-}
-
-type MaterializedViewStore interface {
-	Get(ctx context.Context, req submatview.Request) (submatview.Result, error)
-	NotifyCallback(ctx context.Context, req submatview.Request, cID string, cb cache.Callback) error
+	return conn.GetState() == connectivity.Ready
 }
 
 func (c *Client) ServiceNodes(
@@ -59,7 +55,7 @@ func (c *Client) ServiceNodes(
 	// TODO: DNSServer emitted a metric here, do we still need it?
 	if req.QueryOptions.AllowStale && req.QueryOptions.MaxStaleDuration > 0 && out.QueryMeta.LastContact > req.MaxStaleDuration {
 		req.AllowStale = false
-		err := c.NetRPC.RPC("Health.ServiceNodes", &req, &out)
+		err := c.NetRPC.RPC(context.Background(), "Health.ServiceNodes", &req, &out)
 		return out, cache.ResultMeta{}, err
 	}
 
@@ -72,7 +68,7 @@ func (c *Client) getServiceNodes(
 ) (structs.IndexedCheckServiceNodes, cache.ResultMeta, error) {
 	var out structs.IndexedCheckServiceNodes
 	if !req.QueryOptions.UseCache {
-		err := c.NetRPC.RPC("Health.ServiceNodes", &req, &out)
+		err := c.NetRPC.RPC(context.Background(), "Health.ServiceNodes", &req, &out)
 		return out, cache.ResultMeta{}, err
 	}
 
@@ -114,17 +110,11 @@ func (c *Client) newServiceRequest(req structs.ServiceSpecificRequest) serviceRe
 	}
 }
 
-// Close any underlying connections used by the client.
-func (c *Client) Close() error {
-	if c == nil {
-		return nil
-	}
-	return c.MaterializerDeps.Conn.Close()
-}
+var _ submatview.Request = (*serviceRequest)(nil)
 
 type serviceRequest struct {
 	structs.ServiceSpecificRequest
-	deps MaterializerDeps
+	deps rpcclient.MaterializerDeps
 }
 
 func (r serviceRequest) CacheInfo() cache.RequestInfo {
@@ -136,14 +126,14 @@ func (r serviceRequest) Type() string {
 }
 
 func (r serviceRequest) NewMaterializer() (submatview.Materializer, error) {
-	view, err := newHealthView(r.ServiceSpecificRequest)
+	view, err := NewHealthView(r.ServiceSpecificRequest)
 	if err != nil {
 		return nil, err
 	}
 	deps := submatview.Deps{
 		View:    view,
 		Logger:  r.deps.Logger,
-		Request: newMaterializerRequest(r.ServiceSpecificRequest),
+		Request: NewMaterializerRequest(r.ServiceSpecificRequest),
 	}
 
 	return submatview.NewRPCMaterializer(pbsubscribe.NewStateChangeSubscriptionClient(r.deps.Conn), deps), nil

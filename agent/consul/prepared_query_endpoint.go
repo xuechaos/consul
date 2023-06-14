@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package consul
 
 import (
@@ -14,6 +17,7 @@ import (
 	"github.com/hashicorp/consul/acl"
 	"github.com/hashicorp/consul/agent/consul/state"
 	"github.com/hashicorp/consul/agent/structs"
+	"github.com/hashicorp/consul/agent/structs/aclfilter"
 	"github.com/hashicorp/consul/logging"
 )
 
@@ -137,7 +141,7 @@ func (p *PreparedQuery) Apply(args *structs.PreparedQueryRequest, reply *string)
 }
 
 // parseQuery makes sure the entries of a query are valid for a create or
-// update operation. Some of the fields are not checked or are partially
+// update operation. Some fields are not checked or are partially
 // checked, as noted in the comments below. This also updates all the parsed
 // fields of the query.
 func parseQuery(query *structs.PreparedQuery) error {
@@ -159,7 +163,7 @@ func parseQuery(query *structs.PreparedQuery) error {
 	// Token is checked when the query is executed, but we do make sure the
 	// user hasn't accidentally pasted-in the special redacted token name,
 	// which if we allowed in would be super hard to debug and understand.
-	if query.Token == redactedToken {
+	if query.Token == aclfilter.RedactedToken {
 		return fmt.Errorf("Bad Token '%s', it looks like a query definition with a redacted token was submitted", query.Token)
 	}
 
@@ -186,13 +190,22 @@ func parseService(svc *structs.ServiceQuery) error {
 		return fmt.Errorf("Must provide a Service name to query")
 	}
 
+	failover := svc.Failover
 	// NearestN can be 0 which means "don't fail over by RTT".
-	if svc.Failover.NearestN < 0 {
+	if failover.NearestN < 0 {
 		return fmt.Errorf("Bad NearestN '%d', must be >= 0", svc.Failover.NearestN)
+	}
+
+	if (failover.NearestN != 0 || len(failover.Datacenters) != 0) && len(failover.Targets) != 0 {
+		return fmt.Errorf("Targets cannot be populated with NearestN or Datacenters")
 	}
 
 	// Make sure the metadata filters are valid
 	if err := structs.ValidateNodeMetadata(svc.NodeMeta, true); err != nil {
+		return err
+	}
+
+	if err := parseSameness(svc); err != nil {
 		return err
 	}
 
@@ -299,9 +312,9 @@ func (p *PreparedQuery) Explain(args *structs.PreparedQueryExecuteRequest,
 	defer metrics.MeasureSince([]string{"prepared-query", "explain"}, time.Now())
 
 	// We have to do this ourselves since we are not doing a blocking RPC.
-	p.srv.setQueryMeta(&reply.QueryMeta, args.Token)
+	p.srv.SetQueryMeta(&reply.QueryMeta, args.Token)
 	if args.RequireConsistent {
-		if err := p.srv.consistentRead(); err != nil {
+		if err := p.srv.ConsistentRead(); err != nil {
 			return err
 		}
 	}
@@ -347,7 +360,7 @@ func (p *PreparedQuery) Execute(args *structs.PreparedQueryExecuteRequest,
 
 	// We have to do this ourselves since we are not doing a blocking RPC.
 	if args.RequireConsistent {
-		if err := p.srv.consistentRead(); err != nil {
+		if err := p.srv.ConsistentRead(); err != nil {
 			return err
 		}
 	}
@@ -362,108 +375,117 @@ func (p *PreparedQuery) Execute(args *structs.PreparedQueryExecuteRequest,
 		return structs.ErrQueryNotFound
 	}
 
-	// Execute the query for the local DC.
-	if err := p.execute(query, reply, args.Connect); err != nil {
-		return err
-	}
+	// If we have a sameness group, it controls the initial query and
+	// subsequent failover if required (Enterprise Only)
+	if query.Service.SamenessGroup != "" {
+		wrapper := newQueryServerWrapper(p.srv, p.ExecuteRemote)
+		if err := querySameness(wrapper, *query, args, reply); err != nil {
+			return err
+		}
+	} else {
+		// Execute the query for the local DC.
+		if err := p.execute(query, reply, args.Connect); err != nil {
+			return err
+		}
 
-	// If they supplied a token with the query, use that, otherwise use the
-	// token passed in with the request.
-	token := args.QueryOptions.Token
-	if query.Token != "" {
-		token = query.Token
-	}
-	if err := p.srv.filterACL(token, reply); err != nil {
-		return err
-	}
+		// If they supplied a token with the query, use that, otherwise use the
+		// token passed in with the request.
+		token := args.QueryOptions.Token
+		if query.Token != "" {
+			token = query.Token
+		}
+		if err := p.srv.filterACL(token, reply); err != nil {
+			return err
+		}
 
-	// TODO (slackpad) We could add a special case here that will avoid the
-	// fail over if we filtered everything due to ACLs. This seems like it
-	// might not be worth the code complexity and behavior differences,
-	// though, since this is essentially a misconfiguration.
+		// TODO (slackpad) We could add a special case here that will avoid the
+		// fail over if we filtered everything due to ACLs. This seems like it
+		// might not be worth the code complexity and behavior differences,
+		// though, since this is essentially a misconfiguration.
 
-	// We have to do this ourselves since we are not doing a blocking RPC.
-	p.srv.setQueryMeta(&reply.QueryMeta, token)
+		// We have to do this ourselves since we are not doing a blocking RPC.
+		p.srv.SetQueryMeta(&reply.QueryMeta, token)
 
-	// Shuffle the results in case coordinates are not available if they
-	// requested an RTT sort.
-	reply.Nodes.Shuffle()
+		// Shuffle the results in case coordinates are not available if they
+		// requested an RTT sort.
+		reply.Nodes.Shuffle()
 
-	// Build the query source. This can be provided by the client, or by
-	// the prepared query. Client-specified takes priority.
-	qs := args.Source
-	if qs.Datacenter == "" {
-		qs.Datacenter = args.Agent.Datacenter
-	}
-	if query.Service.Near != "" && qs.Node == "" {
-		qs.Node = query.Service.Near
-	}
+		// Build the query source. This can be provided by the client, or by
+		// the prepared query. Client-specified takes priority.
+		qs := args.Source
+		if qs.Datacenter == "" {
+			qs.Datacenter = args.Agent.Datacenter
+		}
+		if query.Service.Near != "" && qs.Node == "" {
+			qs.Node = query.Service.Near
+		}
 
-	// Respect the magic "_agent" flag.
-	if qs.Node == "_agent" {
-		qs.Node = args.Agent.Node
-	} else if qs.Node == "_ip" {
-		if args.Source.Ip != "" {
-			_, nodes, err := state.Nodes(nil, structs.NodeEnterpriseMetaInDefaultPartition(), structs.TODOPeerKeyword)
-			if err != nil {
-				return err
+		// Respect the magic "_agent" flag.
+		if qs.Node == "_agent" {
+			qs.Node = args.Agent.Node
+		} else if qs.Node == "_ip" {
+			if args.Source.Ip != "" {
+				_, nodes, err := state.Nodes(nil, structs.NodeEnterpriseMetaInDefaultPartition(), structs.TODOPeerKeyword)
+				if err != nil {
+					return err
+				}
+
+				for _, node := range nodes {
+					if args.Source.Ip == node.Address {
+						qs.Node = node.Node
+						break
+					}
+				}
+			} else {
+				p.logger.Warn("Prepared Query using near=_ip requires " +
+					"the source IP to be set but none was provided. No distance " +
+					"sorting will be done.")
+
 			}
 
-			for _, node := range nodes {
-				if args.Source.Ip == node.Address {
-					qs.Node = node.Node
+			// Either a source IP was given, but we couldn't find the associated node
+			// or no source ip was given. In both cases we should wipe the Node value
+			if qs.Node == "_ip" {
+				qs.Node = ""
+			}
+		}
+
+		// Perform the distance sort
+		err = p.srv.sortNodesByDistanceFrom(qs, reply.Nodes)
+		if err != nil {
+			return err
+		}
+
+		// If we applied a distance sort, make sure that the node queried for is in
+		// position 0, provided the results are from the same datacenter.
+		if qs.Node != "" && reply.Datacenter == qs.Datacenter {
+			for i, node := range reply.Nodes {
+				if strings.EqualFold(node.Node.Node, qs.Node) {
+					reply.Nodes[0], reply.Nodes[i] = reply.Nodes[i], reply.Nodes[0]
+					break
+				}
+
+				// Put a cap on the depth of the search. The local agent should
+				// never be further in than this if distance sorting was applied.
+				if i == 9 {
 					break
 				}
 			}
-		} else {
-			p.logger.Warn("Prepared Query using near=_ip requires " +
-				"the source IP to be set but none was provided. No distance " +
-				"sorting will be done.")
-
 		}
 
-		// Either a source IP was given but we couldnt find the associated node
-		// or no source ip was given. In both cases we should wipe the Node value
-		if qs.Node == "_ip" {
-			qs.Node = ""
+		// Apply the limit if given.
+		if args.Limit > 0 && len(reply.Nodes) > args.Limit {
+			reply.Nodes = reply.Nodes[:args.Limit]
 		}
-	}
 
-	// Perform the distance sort
-	err = p.srv.sortNodesByDistanceFrom(qs, reply.Nodes)
-	if err != nil {
-		return err
-	}
-
-	// If we applied a distance sort, make sure that the node queried for is in
-	// position 0, provided the results are from the same datacenter.
-	if qs.Node != "" && reply.Datacenter == qs.Datacenter {
-		for i, node := range reply.Nodes {
-			if strings.EqualFold(node.Node.Node, qs.Node) {
-				reply.Nodes[0], reply.Nodes[i] = reply.Nodes[i], reply.Nodes[0]
-				break
+		// In the happy path where we found some healthy nodes we go with that
+		// and bail out. Otherwise, we fail over and try remote DCs, as allowed
+		// by the query setup.
+		if len(reply.Nodes) == 0 {
+			wrapper := newQueryServerWrapper(p.srv, p.ExecuteRemote)
+			if err := queryFailover(wrapper, *query, args, reply); err != nil {
+				return err
 			}
-
-			// Put a cap on the depth of the search. The local agent should
-			// never be further in than this if distance sorting was applied.
-			if i == 9 {
-				break
-			}
-		}
-	}
-
-	// Apply the limit if given.
-	if args.Limit > 0 && len(reply.Nodes) > args.Limit {
-		reply.Nodes = reply.Nodes[:args.Limit]
-	}
-
-	// In the happy path where we found some healthy nodes we go with that
-	// and bail out. Otherwise, we fail over and try remote DCs, as allowed
-	// by the query setup.
-	if len(reply.Nodes) == 0 {
-		wrapper := &queryServerWrapper{p.srv}
-		if err := queryFailover(wrapper, query, args, reply); err != nil {
-			return err
 		}
 	}
 
@@ -484,7 +506,7 @@ func (p *PreparedQuery) ExecuteRemote(args *structs.PreparedQueryExecuteRemoteRe
 
 	// We have to do this ourselves since we are not doing a blocking RPC.
 	if args.RequireConsistent {
-		if err := p.srv.consistentRead(); err != nil {
+		if err := p.srv.ConsistentRead(); err != nil {
 			return err
 		}
 	}
@@ -505,7 +527,7 @@ func (p *PreparedQuery) ExecuteRemote(args *structs.PreparedQueryExecuteRemoteRe
 	}
 
 	// We have to do this ourselves since we are not doing a blocking RPC.
-	p.srv.setQueryMeta(&reply.QueryMeta, token)
+	p.srv.SetQueryMeta(&reply.QueryMeta, token)
 
 	// We don't bother trying to do an RTT sort here since we are by
 	// definition in another DC. We just shuffle to make sure that we
@@ -534,7 +556,7 @@ func (p *PreparedQuery) execute(query *structs.PreparedQuery,
 		f = state.CheckConnectServiceNodes
 	}
 
-	_, nodes, err := f(nil, query.Service.Service, &query.Service.EnterpriseMeta, query.Service.PeerName)
+	_, nodes, err := f(nil, query.Service.Service, &query.Service.EnterpriseMeta, query.Service.Peer)
 	if err != nil {
 		return err
 	}
@@ -564,8 +586,13 @@ func (p *PreparedQuery) execute(query *structs.PreparedQuery,
 	reply.Nodes = nodes
 	reply.DNS = query.DNS
 
-	// Stamp the result for this datacenter.
-	reply.Datacenter = p.srv.config.Datacenter
+	// Stamp the result with its this datacenter or peer.
+	if peerName := query.Service.Peer; peerName != "" {
+		reply.PeerName = peerName
+		reply.Datacenter = ""
+	} else {
+		reply.Datacenter = p.srv.config.Datacenter
+	}
 
 	return nil
 }
@@ -646,16 +673,46 @@ func serviceMetaFilter(filters map[string]string, nodes structs.CheckServiceNode
 	return filtered
 }
 
+type stateLookuper interface {
+	samenessGroupLookup(name string, entMeta acl.EnterpriseMeta) (uint64, *structs.SamenessGroupConfigEntry, error)
+}
+
+type stateLookup struct {
+	srv *Server
+}
+
 // queryServer is a wrapper that makes it easier to test the failover logic.
 type queryServer interface {
 	GetLogger() hclog.Logger
 	GetOtherDatacentersByDistance() ([]string, error)
-	ForwardDC(method, dc string, args interface{}, reply interface{}) error
+	GetLocalDC() string
+	ExecuteRemote(args *structs.PreparedQueryExecuteRemoteRequest, reply *structs.PreparedQueryExecuteResponse) error
+	GetSamenessGroupFailoverTargets(name string, entMeta acl.EnterpriseMeta) ([]structs.QueryFailoverTarget, error)
 }
 
 // queryServerWrapper applies the queryServer interface to a Server.
 type queryServerWrapper struct {
-	srv *Server
+	srv           *Server
+	sl            stateLookuper
+	executeRemote func(args *structs.PreparedQueryExecuteRemoteRequest, reply *structs.PreparedQueryExecuteResponse) error
+}
+
+func newQueryServerWrapper(srv *Server, executeRemote func(args *structs.PreparedQueryExecuteRemoteRequest, reply *structs.PreparedQueryExecuteResponse) error) *queryServerWrapper {
+	return &queryServerWrapper{
+		srv:           srv,
+		executeRemote: executeRemote,
+		sl:            stateLookup{srv},
+	}
+}
+
+// GetLocalDC returns the name of the local datacenter.
+func (q *queryServerWrapper) GetLocalDC() string {
+	return q.srv.config.Datacenter
+}
+
+// ExecuteRemote calls ExecuteRemote on PreparedQuery.
+func (q *queryServerWrapper) ExecuteRemote(args *structs.PreparedQueryExecuteRemoteRequest, reply *structs.PreparedQueryExecuteResponse) error {
+	return q.executeRemote(args, reply)
 }
 
 // GetLogger returns the server's logger.
@@ -682,14 +739,9 @@ func (q *queryServerWrapper) GetOtherDatacentersByDistance() ([]string, error) {
 	return result, nil
 }
 
-// ForwardDC calls into the server's RPC forwarder.
-func (q *queryServerWrapper) ForwardDC(method, dc string, args interface{}, reply interface{}) error {
-	return q.srv.forwardDC(method, dc, args, reply)
-}
-
 // queryFailover runs an algorithm to determine which DCs to try and then calls
 // them to try to locate alternative services.
-func queryFailover(q queryServer, query *structs.PreparedQuery,
+func queryFailover(q queryServer, query structs.PreparedQuery,
 	args *structs.PreparedQueryExecuteRequest,
 	reply *structs.PreparedQueryExecuteResponse) error {
 
@@ -700,15 +752,15 @@ func queryFailover(q queryServer, query *structs.PreparedQuery,
 		return err
 	}
 
-	// This will help us filter unknown DCs supplied by the user.
+	// This will help us filter unknown targets supplied by the user.
 	known := make(map[string]struct{})
 	for _, dc := range nearest {
 		known[dc] = struct{}{}
 	}
 
-	// Build a candidate list of DCs to try, starting with the nearest N
+	// Build a candidate list of failover targets to try, starting with the nearest N target
 	// from RTTs.
-	var dcs []string
+	var targets []structs.QueryFailoverTarget
 	index := make(map[string]struct{})
 	if query.Service.Failover.NearestN > 0 {
 		for i, dc := range nearest {
@@ -716,58 +768,42 @@ func queryFailover(q queryServer, query *structs.PreparedQuery,
 				break
 			}
 
-			dcs = append(dcs, dc)
+			targets = append(targets, structs.QueryFailoverTarget{Datacenter: dc})
 			index[dc] = struct{}{}
 		}
 	}
 
-	// Then add any DCs explicitly listed that weren't selected above.
-	for _, dc := range query.Service.Failover.Datacenters {
-		// This will prevent a log of other log spammage if we do not
+	// Then add any targets explicitly listed that weren't selected above.
+	for _, target := range query.Service.Failover.AsTargets() {
+		// This will prevent a log of other log spam if we do not
 		// attempt to talk to datacenters we don't know about.
-		if _, ok := known[dc]; !ok {
-			q.GetLogger().Debug("Skipping unknown datacenter in prepared query", "datacenter", dc)
-			continue
+		if dc := target.Datacenter; dc != "" {
+			if _, ok := known[dc]; !ok {
+				q.GetLogger().Debug("Skipping unknown datacenter in prepared query", "datacenter", dc)
+				continue
+			}
+
+			// This will make sure we don't re-try something that fails
+			// from the NearestN list.
+			if _, ok := index[dc]; !ok {
+				targets = append(targets, target)
+				continue
+			}
 		}
 
-		// This will make sure we don't re-try something that fails
-		// from the NearestN list.
-		if _, ok := index[dc]; !ok {
-			dcs = append(dcs, dc)
+		if target.Peer != "" || target.PartitionOrEmpty() != "" || target.NamespaceOrEmpty() != "" {
+			targets = append(targets, target)
 		}
 	}
 
-	// Now try the selected DCs in priority order.
+	// Now try the selected targets in priority order.
 	failovers := 0
-	for _, dc := range dcs {
+	for _, target := range targets {
 		// This keeps track of how many iterations we actually run.
 		failovers++
 
-		// Be super paranoid and set the nodes slice to nil since it's
-		// the same slice we used before. We know there's nothing in
-		// there, but the underlying msgpack library has a policy of
-		// updating the slice when it's non-nil, and that feels dirty.
-		// Let's just set it to nil so there's no way to communicate
-		// through this slice across successive RPC calls.
-		reply.Nodes = nil
-
-		// Note that we pass along the limit since it can be applied
-		// remotely to save bandwidth. We also pass along the consistency
-		// mode information and token we were given, so that applies to
-		// the remote query as well.
-		remote := &structs.PreparedQueryExecuteRemoteRequest{
-			Datacenter:   dc,
-			Query:        *query,
-			Limit:        args.Limit,
-			QueryOptions: args.QueryOptions,
-			Connect:      args.Connect,
-		}
-		if err := q.ForwardDC("PreparedQuery.ExecuteRemote", dc, remote, reply); err != nil {
-			q.GetLogger().Warn("Failed querying for service in datacenter",
-				"service", query.Service.Service,
-				"datacenter", dc,
-				"error", err,
-			)
+		err = targetSelector(q, query, args, target, reply)
+		if err != nil {
 			continue
 		}
 
@@ -780,6 +816,55 @@ func queryFailover(q queryServer, query *structs.PreparedQuery,
 	// Set this at the end because the response from the remote doesn't have
 	// this information.
 	reply.Failovers = failovers
+
+	return nil
+}
+
+func targetSelector(q queryServer,
+	query structs.PreparedQuery,
+	args *structs.PreparedQueryExecuteRequest,
+	target structs.QueryFailoverTarget,
+	reply *structs.PreparedQueryExecuteResponse) error {
+	// Be super paranoid and set the nodes slice to nil since it's
+	// the same slice we used before. We know there's nothing in
+	// there, but the underlying msgpack library has a policy of
+	// updating the slice when it's non-nil, and that feels dirty.
+	// Let's just set it to nil so there's no way to communicate
+	// through this slice across successive RPC calls.
+	reply.Nodes = nil
+
+	// Reset Peer, because it may have been set by a previous failover
+	// target.
+	query.Service.Peer = target.Peer
+	query.Service.EnterpriseMeta = target.EnterpriseMeta
+	dc := target.Datacenter
+	if target.Peer != "" {
+		dc = q.GetLocalDC()
+	}
+
+	// Note that we pass along the limit since may be applied
+	// remotely to save bandwidth. We also pass along the consistency
+	// mode information and token we were given, so that applies to
+	// the remote query as well.
+	remote := &structs.PreparedQueryExecuteRemoteRequest{
+		Datacenter:   dc,
+		Query:        query,
+		Limit:        args.Limit,
+		QueryOptions: args.QueryOptions,
+		Connect:      args.Connect,
+	}
+
+	var err error
+	if err = q.ExecuteRemote(remote, reply); err != nil {
+		q.GetLogger().Warn("Failed querying for service in datacenter",
+			"service", query.Service.Service,
+			"peerName", query.Service.Peer,
+			"datacenter", dc,
+			"enterpriseMeta", query.Service.EnterpriseMeta,
+			"error", err,
+		)
+		return err
+	}
 
 	return nil
 }

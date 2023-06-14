@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package debug
 
 import (
@@ -519,6 +522,5 @@ func TestDebugCommand_DebugDisabled(t *testing.T) {
 	}
 
 	errOutput := ui.ErrorWriter.String()
-	require.Contains(t, errOutput, "failed to collect")
-
+	require.Contains(t, errOutput, "Unable to capture pprof")
 }

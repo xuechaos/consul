@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package structs
 
 import (
@@ -147,7 +150,6 @@ func (q *QueryOptions) SetFilter(filter string) {
 	q.Filter = filter
 }
 
-//
 func (m *QueryMeta) GetIndex() uint64 {
 	if m != nil {
 		return m.Index

@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package submatview
 
 import (
@@ -8,7 +11,7 @@ import (
 	"github.com/hashicorp/go-hclog"
 
 	"github.com/hashicorp/consul/lib/retry"
-	"github.com/hashicorp/consul/proto/pbsubscribe"
+	"github.com/hashicorp/consul/proto/private/pbsubscribe"
 )
 
 // View receives events from, and return results to, Materializer. A view is
@@ -185,11 +188,21 @@ func (m *materializer) handleError(req *pbsubscribe.SubscribeRequest, err error)
 		m.lock.Unlock()
 	}
 
-	m.logger.Error("subscribe call failed",
+	logger := m.logger.With(
 		"err", err,
 		"topic", req.Topic,
-		"key", req.Key,
-		"failure_count", failures+1)
+		"failure_count", failures+1,
+	)
+
+	if req.GetWildcardSubject() {
+		logger = logger.With("wildcard_subject", true)
+	} else if sub := req.GetNamedSubject(); sub != nil {
+		logger = logger.With("key", sub.Key)
+	} else {
+		logger = logger.With("key", req.Key) // nolint:staticcheck // SA1019 intentional use of deprecated field
+	}
+
+	logger.Error("subscribe call failed")
 }
 
 // isNonTemporaryOrConsecutiveFailure returns true if the error is not a

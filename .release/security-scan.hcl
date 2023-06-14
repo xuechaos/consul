@@ -1,3 +1,6 @@
+# Copyright (c) HashiCorp, Inc.
+# SPDX-License-Identifier: MPL-2.0
+
 container {
 	dependencies = true
 	alpine_secdb = false
@@ -5,7 +8,7 @@ container {
 }
 
 binary {
-	secrets      = true
+	secrets      = false
 	go_modules   = false
 	osv          = true
 	oss_index    = true

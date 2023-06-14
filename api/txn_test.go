@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package api
 
 import (
@@ -187,7 +190,7 @@ func TestAPI_ClientTxn(t *testing.T) {
 				CreateIndex: ret.Results[0].KV.CreateIndex,
 				ModifyIndex: ret.Results[0].KV.ModifyIndex,
 				Namespace:   ret.Results[0].KV.Namespace,
-				Partition:   splitDefaultPartition,
+				Partition:   defaultPartition,
 			},
 		},
 		&TxnResult{
@@ -199,14 +202,14 @@ func TestAPI_ClientTxn(t *testing.T) {
 				CreateIndex: ret.Results[1].KV.CreateIndex,
 				ModifyIndex: ret.Results[1].KV.ModifyIndex,
 				Namespace:   ret.Results[0].KV.Namespace,
-				Partition:   splitDefaultPartition,
+				Partition:   defaultPartition,
 			},
 		},
 		&TxnResult{
 			Node: &Node{
 				ID:          nodeID,
 				Node:        "foo",
-				Partition:   splitDefaultPartition,
+				Partition:   defaultPartition,
 				Address:     "2.2.2.2",
 				Datacenter:  "dc1",
 				CreateIndex: ret.Results[2].Node.CreateIndex,
@@ -218,8 +221,8 @@ func TestAPI_ClientTxn(t *testing.T) {
 				ID:          "foo1",
 				CreateIndex: ret.Results[3].Service.CreateIndex,
 				ModifyIndex: ret.Results[3].Service.CreateIndex,
-				Partition:   splitDefaultPartition,
-				Namespace:   splitDefaultNamespace,
+				Partition:   defaultPartition,
+				Namespace:   defaultNamespace,
 			},
 		},
 		&TxnResult{
@@ -237,8 +240,8 @@ func TestAPI_ClientTxn(t *testing.T) {
 					DeregisterCriticalServiceAfterDuration: 20 * time.Second,
 				},
 				Type:        "tcp",
-				Partition:   splitDefaultPartition,
-				Namespace:   splitDefaultNamespace,
+				Partition:   defaultPartition,
+				Namespace:   defaultNamespace,
 				CreateIndex: ret.Results[4].Check.CreateIndex,
 				ModifyIndex: ret.Results[4].Check.CreateIndex,
 			},
@@ -258,8 +261,8 @@ func TestAPI_ClientTxn(t *testing.T) {
 					DeregisterCriticalServiceAfterDuration: 160 * time.Second,
 				},
 				Type:        "tcp",
-				Partition:   splitDefaultPartition,
-				Namespace:   splitDefaultNamespace,
+				Partition:   defaultPartition,
+				Namespace:   defaultNamespace,
 				CreateIndex: ret.Results[4].Check.CreateIndex,
 				ModifyIndex: ret.Results[4].Check.CreateIndex,
 			},
@@ -279,8 +282,8 @@ func TestAPI_ClientTxn(t *testing.T) {
 					DeregisterCriticalServiceAfterDuration: 20 * time.Second,
 				},
 				Type:        "udp",
-				Partition:   splitDefaultPartition,
-				Namespace:   splitDefaultNamespace,
+				Partition:   defaultPartition,
+				Namespace:   defaultNamespace,
 				CreateIndex: ret.Results[4].Check.CreateIndex,
 				ModifyIndex: ret.Results[4].Check.CreateIndex,
 			},
@@ -300,8 +303,8 @@ func TestAPI_ClientTxn(t *testing.T) {
 					DeregisterCriticalServiceAfterDuration: 20 * time.Second,
 				},
 				Type:        "udp",
-				Partition:   splitDefaultPartition,
-				Namespace:   splitDefaultNamespace,
+				Partition:   defaultPartition,
+				Namespace:   defaultNamespace,
 				CreateIndex: ret.Results[4].Check.CreateIndex,
 				ModifyIndex: ret.Results[4].Check.CreateIndex,
 			},
@@ -342,14 +345,14 @@ func TestAPI_ClientTxn(t *testing.T) {
 					CreateIndex: ret.Results[0].KV.CreateIndex,
 					ModifyIndex: ret.Results[0].KV.ModifyIndex,
 					Namespace:   ret.Results[0].KV.Namespace,
-					Partition:   splitDefaultPartition,
+					Partition:   defaultPartition,
 				},
 			},
 			&TxnResult{
 				Node: &Node{
 					ID:         s.Config.NodeID,
 					Node:       s.Config.NodeName,
-					Partition:  splitDefaultPartition,
+					Partition:  defaultPartition,
 					Address:    "127.0.0.1",
 					Datacenter: "dc1",
 					TaggedAddresses: map[string]string{

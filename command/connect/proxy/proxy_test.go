@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package proxy
 
 import (
@@ -104,6 +107,17 @@ func TestCommandConfigWatcher(t *testing.T) {
 			Name: "-sidecar-for, one sidecar",
 			Flags: []string{
 				"-sidecar-for", "one-sidecar",
+			},
+			Test: func(t *testing.T, cfg *proxy.Config) {
+				// Sanity check we got the right instance.
+				require.Equal(t, 9999, cfg.PublicListener.BindPort)
+			},
+		},
+
+		{
+			Name: "-sidecar-for, one sidecar case-insensitive",
+			Flags: []string{
+				"-sidecar-for", "One-SideCar",
 			},
 			Test: func(t *testing.T, cfg *proxy.Config) {
 				// Sanity check we got the right instance.

@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package consul
 
 import (
@@ -8,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/armon/go-metrics"
 	"github.com/hashicorp/go-hclog"
 	"github.com/hashicorp/memberlist"
 	"github.com/hashicorp/raft"
@@ -19,6 +23,7 @@ import (
 	"github.com/hashicorp/consul/lib"
 	libserf "github.com/hashicorp/consul/lib/serf"
 	"github.com/hashicorp/consul/logging"
+	"github.com/hashicorp/consul/types"
 )
 
 const (
@@ -103,6 +108,12 @@ func (s *Server) setupSerfConfig(opts setupSerfOptions) (*serf.Config, error) {
 	conf.Tags["build"] = s.config.Build
 	addr := opts.Listener.Addr().(*net.TCPAddr)
 	conf.Tags["port"] = fmt.Sprintf("%d", addr.Port)
+	if s.config.GRPCPort > 0 {
+		conf.Tags["grpc_port"] = fmt.Sprintf("%d", s.config.GRPCPort)
+	}
+	if s.config.GRPCTLSPort > 0 {
+		conf.Tags["grpc_tls_port"] = fmt.Sprintf("%d", s.config.GRPCTLSPort)
+	}
 	if s.config.Bootstrap {
 		conf.Tags["bootstrap"] = "1"
 	}
@@ -146,11 +157,11 @@ func (s *Server) setupSerfConfig(opts setupSerfOptions) (*serf.Config, error) {
 	serfLogger := s.logger.
 		NamedIntercept(logging.Serf).
 		NamedIntercept(subLoggerName).
-		StandardLoggerIntercept(&hclog.StandardLoggerOptions{InferLevels: true})
+		StandardLogger(&hclog.StandardLoggerOptions{InferLevels: true})
 	memberlistLogger := s.logger.
 		NamedIntercept(logging.Memberlist).
 		NamedIntercept(subLoggerName).
-		StandardLoggerIntercept(&hclog.StandardLoggerOptions{InferLevels: true})
+		StandardLogger(&hclog.StandardLoggerOptions{InferLevels: true})
 
 	conf.MemberlistConfig.Logger = memberlistLogger
 	conf.Logger = serfLogger
@@ -174,9 +185,10 @@ func (s *Server) setupSerfConfig(opts setupSerfOptions) (*serf.Config, error) {
 
 	if opts.WAN {
 		nt, err := memberlist.NewNetTransport(&memberlist.NetTransportConfig{
-			BindAddrs: []string{conf.MemberlistConfig.BindAddr},
-			BindPort:  conf.MemberlistConfig.BindPort,
-			Logger:    conf.MemberlistConfig.Logger,
+			BindAddrs:    []string{conf.MemberlistConfig.BindAddr},
+			BindPort:     conf.MemberlistConfig.BindPort,
+			Logger:       conf.MemberlistConfig.Logger,
+			MetricLabels: []metrics.Label{{Name: "network", Value: "wan"}},
 		})
 		if err != nil {
 			return nil, err
@@ -226,6 +238,8 @@ func (s *Server) setupSerfConfig(opts setupSerfOptions) (*serf.Config, error) {
 	}
 
 	conf.ReconnectTimeoutOverride = libserf.NewReconnectOverride(s.logger)
+
+	addSerfMetricsLabels(conf, opts.WAN, opts.Segment, s.config.AgentEnterpriseMeta().PartitionOrDefault(), "")
 
 	addEnterpriseSerfTags(conf.Tags, s.config.AgentEnterpriseMeta())
 
@@ -346,6 +360,7 @@ func (s *Server) lanNodeJoin(me serf.MemberEvent) {
 
 		// Update server lookup
 		s.serverLookup.AddServer(serverMeta)
+		s.router.AddServer(types.AreaLAN, serverMeta)
 
 		// If we're still expecting to bootstrap, may need to handle this.
 		if s.config.BootstrapExpect != 0 {
@@ -367,6 +382,7 @@ func (s *Server) lanNodeUpdate(me serf.MemberEvent) {
 
 		// Update server lookup
 		s.serverLookup.AddServer(serverMeta)
+		s.router.AddServer(types.AreaLAN, serverMeta)
 	}
 }
 
@@ -505,5 +521,6 @@ func (s *Server) lanNodeFailed(me serf.MemberEvent) {
 
 		// Update id to address map
 		s.serverLookup.RemoveServer(serverMeta)
+		s.router.RemoveServer(types.AreaLAN, serverMeta)
 	}
 }

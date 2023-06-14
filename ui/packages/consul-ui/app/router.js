@@ -1,16 +1,23 @@
+/**
+ * Copyright (c) HashiCorp, Inc.
+ * SPDX-License-Identifier: MPL-2.0
+ */
+
 /* globals requirejs */
 import EmberRouter from '@ember/routing/router';
 import config from './config/environment';
 import { runInDebug } from '@ember/debug';
-import merge from 'deepmerge';
+import assign from 'deepmerge';
 import { env } from 'consul-ui/env';
 import walk, { dump } from 'consul-ui/utils/routing/walk';
 
 const doc = document;
 const appName = config.modulePrefix;
 
-export const routes = merge.all(
-  [...doc.querySelectorAll(`script[data-routes]`)].map($item => JSON.parse($item.dataset[`routes`]))
+export const routes = assign.all(
+  [...doc.querySelectorAll(`script[data-routes]`)].map(($item) =>
+    JSON.parse($item.dataset[`routes`])
+  )
 );
 
 runInDebug(() => {
@@ -27,7 +34,7 @@ runInDebug(() => {
           _options: { path: page.name },
         };
       }
-      page.pages.forEach(page => {
+      page.pages.forEach((page) => {
         const url = page.relativeUrl;
         if (typeof url === 'string') {
           if (url !== '') {
@@ -37,7 +44,7 @@ runInDebug(() => {
           }
         }
       });
-      page.children.forEach(child => {
+      page.children.forEach((child) => {
         addPage(route, child);
       });
     })(routes, output.default.nested);

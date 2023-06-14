@@ -1,10 +1,14 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 //go:build !consulent
 // +build !consulent
 
 package acl
 
 const (
-	DefaultPartitionName = ""
+	WildcardPartitionName = ""
+	DefaultPartitionName  = ""
 )
 
 // Reviewer Note: This is a little bit strange; one might want it to be "" like partition name

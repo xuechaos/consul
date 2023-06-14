@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package logging
 
 import (
@@ -15,7 +18,7 @@ var (
 	now = time.Now
 )
 
-//LogFile is used to setup a file based logger that also performs log rotation
+// LogFile is used to setup a file based logger that also performs log rotation
 type LogFile struct {
 	//Name of the log file
 	fileName string

@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 /*
 Package stream provides a publish/subscribe system for events produced by changes
 to the state store.
@@ -8,7 +11,7 @@ import (
 	"fmt"
 
 	"github.com/hashicorp/consul/acl"
-	"github.com/hashicorp/consul/proto/pbsubscribe"
+	"github.com/hashicorp/consul/proto/private/pbsubscribe"
 )
 
 // Topic is an identifier that partitions events. A subscription will only receive
@@ -20,10 +23,19 @@ type Topic fmt.Stringer
 // normalized resource name (including partition and namespace if applicable).
 type Subject fmt.Stringer
 
-// SubjectNone is used when all events on a given topic are "global" and not
-// further partitioned by subject. For example: the "CA Roots" topic which is
-// used to notify subscribers when the global set CA root certificates changes.
-const SubjectNone StringSubject = "none"
+const (
+	// SubjectNone is used when all events on a given topic are "global" and not
+	// further partitioned by subject. For example: the "CA Roots" topic which is
+	// used to notify subscribers when the global set CA root certificates changes.
+	SubjectNone StringSubject = "none"
+
+	// SubjectWildcard is used to subscribe to all events on a topic, regardless
+	// of their subject. For example: mesh gateways need to consume *all* service
+	// resolver config entries.
+	//
+	// Note: not all topics support wildcard subscriptions.
+	SubjectWildcard StringSubject = "♣"
+)
 
 // Event is a structure with identifiers and a payload. Events are Published to
 // EventPublisher and returned to Subscribers.

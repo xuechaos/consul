@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package consul
 
 import (
@@ -558,7 +561,9 @@ func TestHealth_ServiceNodes(t *testing.T) {
 	}
 
 	t.Parallel()
-	_, s1 := testServer(t)
+	_, s1 := testServerWithConfig(t, func(config *Config) {
+		config.PeeringTestAllowPeerRegistrations = true
+	})
 	codec := rpcClient(t, s1)
 
 	waitForLeaderEstablishment(t, s1)
@@ -1120,7 +1125,7 @@ node "foo" {
 		QueryOptions: structs.QueryOptions{Token: token},
 	}
 	var resp structs.IndexedCheckServiceNodes
-	assert.Nil(t, msgpackrpc.CallWithCodec(codec, "Health.ServiceNodes", &req, &resp))
+	assert.ErrorContains(t, msgpackrpc.CallWithCodec(codec, "Health.ServiceNodes", &req, &resp), "Permission denied")
 	assert.Len(t, resp.Nodes, 0)
 
 	// List w/ token. This should work since we're requesting "foo", but should
@@ -1459,7 +1464,7 @@ func TestHealth_ServiceNodes_Ingress_ACL(t *testing.T) {
 		ServiceName: "db",
 		Ingress:     true,
 	}
-	require.Nil(t, msgpackrpc.CallWithCodec(codec, "Health.ServiceNodes", &req, &out2))
+	require.ErrorContains(t, msgpackrpc.CallWithCodec(codec, "Health.ServiceNodes", &req, &out2), "Permission denied")
 	require.Len(t, out2.Nodes, 0)
 
 	// Requesting a service that is not covered by the token's policy
@@ -1469,7 +1474,7 @@ func TestHealth_ServiceNodes_Ingress_ACL(t *testing.T) {
 		Ingress:      true,
 		QueryOptions: structs.QueryOptions{Token: token.SecretID},
 	}
-	require.Nil(t, msgpackrpc.CallWithCodec(codec, "Health.ServiceNodes", &req, &out2))
+	require.ErrorContains(t, msgpackrpc.CallWithCodec(codec, "Health.ServiceNodes", &req, &out2), "Permission denied")
 	require.Len(t, out2.Nodes, 0)
 
 	// Requesting service covered by the token's policy

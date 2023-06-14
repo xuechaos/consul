@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package uiserver
 
 import (
@@ -35,6 +38,7 @@ func uiTemplateDataFromConfig(cfg *config.RuntimeConfig) (map[string]interface{}
 		"UIConfig":          uiCfg,
 		"LocalDatacenter":   cfg.Datacenter,
 		"PrimaryDatacenter": cfg.PrimaryDatacenter,
+		"PeeringEnabled":    cfg.PeeringEnabled,
 	}
 
 	// Also inject additional provider scripts if needed, otherwise strip the

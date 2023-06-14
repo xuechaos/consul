@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package cache
 
 import (
@@ -8,6 +11,8 @@ import (
 //
 // This interface is typically implemented by request structures in
 // the agent/structs package.
+//
+//go:generate mockery --name Request --inpackage
 type Request interface {
 	// CacheInfo returns information used for caching this request.
 	CacheInfo() RequestInfo

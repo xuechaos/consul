@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package write
 
 import (
@@ -11,6 +14,7 @@ import (
 	"github.com/mitchellh/mapstructure"
 
 	"github.com/hashicorp/consul/api"
+	"github.com/hashicorp/consul/command/config"
 	"github.com/hashicorp/consul/command/flags"
 	"github.com/hashicorp/consul/command/helpers"
 	"github.com/hashicorp/consul/lib/decode"
@@ -66,7 +70,7 @@ func (c *cmd) Run(args []string) int {
 		return 1
 	}
 
-	entry, err := parseConfigEntry(data)
+	entry, err := helpers.ParseConfigEntry(data)
 	if err != nil {
 		c.UI.Error(fmt.Sprintf("Failed to decode config entry input: %v", err))
 		return 1
@@ -97,17 +101,12 @@ func (c *cmd) Run(args []string) int {
 	}
 
 	c.UI.Info(fmt.Sprintf("Config entry written: %s/%s", entry.GetKind(), entry.GetName()))
-	return 0
-}
 
-func parseConfigEntry(data string) (api.ConfigEntry, error) {
-	// parse the data
-	var raw map[string]interface{}
-	if err := hclDecode(&raw, data); err != nil {
-		return nil, fmt.Errorf("Failed to decode config entry input: %v", err)
+	if msg := config.KindSpecificWriteWarning(entry); msg != "" {
+		c.UI.Warn("WARNING: " + msg)
 	}
 
-	return newDecodeConfigEntry(raw)
+	return 0
 }
 
 // There is a 'structs' variation of this in

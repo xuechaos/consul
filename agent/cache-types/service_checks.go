@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package cachetype
 
 import (
@@ -103,6 +106,7 @@ func (c *ServiceHTTPChecks) Fetch(opts cache.FetchOptions, req cache.Request) (c
 // directly to any Consul servers.
 type ServiceHTTPChecksRequest struct {
 	ServiceID     string
+	NodeName      string
 	MinQueryIndex uint64
 	MaxQueryTime  time.Duration
 	acl.EnterpriseMeta

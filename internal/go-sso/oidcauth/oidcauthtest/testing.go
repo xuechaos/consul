@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 // package oidcauthtest exposes tools to assist in writing unit tests of OIDC
 // and JWT authentication workflows.
 //
@@ -14,7 +17,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -82,7 +85,7 @@ func Start(t TestingT) *Server {
 	s.jwks = jwks
 
 	s.httpServer = httptest.NewUnstartedServer(s)
-	s.httpServer.Config.ErrorLog = log.New(ioutil.Discard, "", 0)
+	s.httpServer.Config.ErrorLog = log.New(io.Discard, "", 0)
 	s.httpServer.StartTLS()
 	t.Cleanup(s.httpServer.Close)
 

@@ -1,12 +1,18 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package envoy
 
 import (
 	"bytes"
+	"crypto/sha1"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net"
 	"net/url"
 	"os"
+	"path"
 	"strings"
 	"text/template"
 
@@ -48,6 +54,11 @@ type BootstrapConfig struct {
 	// name. Only exact values are supported here. Full configuration of
 	// stats_config.stats_tags can be made by overriding envoy_stats_config_json.
 	StatsTags []string `mapstructure:"envoy_stats_tags"`
+
+	// TelemetryCollectorBindSocketDir is a string that configures the directory for a
+	// unix socket where Envoy will forward metrics. These metrics get pushed to
+	// the telemetry collector.
+	TelemetryCollectorBindSocketDir string `mapstructure:"envoy_telemetry_collector_bind_socket_dir"`
 
 	// PrometheusBindAddr configures an <ip>:<port> on which the Envoy will listen
 	// and expose a single /metrics HTTP endpoint for Prometheus to scrape. It
@@ -238,6 +249,11 @@ func (c *BootstrapConfig) ConfigureArgs(args *BootstrapTplArgs, omitDeprecatedTa
 		args.StatsFlushInterval = c.StatsFlushInterval
 	}
 
+	// Setup telemetry collector if needed. This MUST happen after the Static*JSON is set above
+	if c.TelemetryCollectorBindSocketDir != "" {
+		appendTelemetryCollectorConfig(args, c.TelemetryCollectorBindSocketDir)
+	}
+
 	return nil
 }
 
@@ -271,7 +287,7 @@ func (c *BootstrapConfig) generateStatsSinks(args *BootstrapTplArgs) error {
 	}
 
 	if len(stats_sinks) > 0 {
-		args.StatsSinksJSON = "[\n" + strings.Join(stats_sinks, ",\n") + "\n]"
+		args.StatsSinksJSON = strings.Join(stats_sinks, ",\n")
 	}
 	return nil
 }
@@ -345,7 +361,7 @@ func resourceTagSpecifiers(omitDeprecatedTags bool) ([]string, error) {
 		// Cluster metrics are prefixed by consul.destination
 		//
 		// Cluster metric name format:
-		// <subset>.<service>.<namespace>.<partition>.<datacenter>.<internal|internal-<version>|external>.<trustdomain>.consul
+		// <subset>.<service>.<namespace>.<partition>.<datacenter|peering>.<internal|internal-<version>|external>.<trustdomain>.consul
 		//
 		// Examples:
 		// (default partition)
@@ -360,6 +376,8 @@ func resourceTagSpecifiers(omitDeprecatedTags bool) ([]string, error) {
 		// - cluster.v2.pong.default.partA.dc2.internal-v1.e5b08d03-bfc3-c870-1833-baddb116e648.consul.bind_errors: 0
 		// - cluster.f8f8f8f8~v2.pong.default.partA.dc2.internal-v1.e5b08d03-bfc3-c870-1833-baddb116e648.consul.bind_errors: 0
 		// - cluster.passthrough~pong.default.partA.dc2.internal-v1.e5b08d03-bfc3-c870-1833-baddb116e648.consul.bind_errors: 0
+		// (peered)
+		// - cluster.pong.default.cloudpeer.external.e5b08d03-bfc3-c870-1833-baddb116e648.consul.bind_errors: 0
 		{"consul.destination.custom_hash",
 			fmt.Sprintf(`^cluster\.(?:passthrough~)?((?:(%s)~)?(?:%s\.)?%s\.%s\.(?:%s\.)?%s\.%s\.%s\.consul\.)`,
 				reSegment, reSegment, reSegment, reSegment, reSegment, reSegment, reSegment, reSegment)},
@@ -377,12 +395,16 @@ func resourceTagSpecifiers(omitDeprecatedTags bool) ([]string, error) {
 				reSegment, reSegment, reSegment, reSegment, reSegment, reSegment, reSegment, reSegment)},
 
 		{"consul.destination.partition",
-			fmt.Sprintf(`^cluster\.(?:passthrough~)?((?:%s~)?(?:%s\.)?%s\.%s\.(?:(%s)\.)?%s\.%s\.%s\.consul\.)`,
-				reSegment, reSegment, reSegment, reSegment, reSegment, reSegment, reSegment, reSegment)},
+			fmt.Sprintf(`^cluster\.(?:passthrough~)?((?:%s~)?(?:%s\.)?%s\.%s\.(?:(%s)\.)?%s\.internal[^.]*\.%s\.consul\.)`,
+				reSegment, reSegment, reSegment, reSegment, reSegment, reSegment, reSegment)},
 
 		{"consul.destination.datacenter",
-			fmt.Sprintf(`^cluster\.(?:passthrough~)?((?:%s~)?(?:%s\.)?%s\.%s\.(?:%s\.)?(%s)\.%s\.%s\.consul\.)`,
-				reSegment, reSegment, reSegment, reSegment, reSegment, reSegment, reSegment, reSegment)},
+			fmt.Sprintf(`^cluster\.(?:passthrough~)?((?:%s~)?(?:%s\.)?%s\.%s\.(?:%s\.)?(%s)\.internal[^.]*\.%s\.consul\.)`,
+				reSegment, reSegment, reSegment, reSegment, reSegment, reSegment, reSegment)},
+
+		{"consul.destination.peer",
+			fmt.Sprintf(`^cluster\.(%s\.(?:%s\.)?(%s)\.external\.%s\.consul\.)`,
+				reSegment, reSegment, reSegment, reSegment)},
 
 		{"consul.destination.routing_type",
 			fmt.Sprintf(`^cluster\.(?:passthrough~)?((?:%s~)?(?:%s\.)?%s\.%s\.(?:%s\.)?%s\.(%s)\.%s\.consul\.)`,
@@ -408,16 +430,26 @@ func resourceTagSpecifiers(omitDeprecatedTags bool) ([]string, error) {
 		// Examples:
 		// - tcp.upstream.db.dc1.downstream_cx_total: 0
 		// - http.upstream.web.frontend.west.dc1.downstream_cx_total: 0
+		//
+		// Peered Listener metric name format:
+		// <tcp|http>.upstream_peered.<service>.<namespace>.peer
+		//
+		// Examples:
+		// - http.upstream_peered.web.frontend.cloudpeer.downstream_cx_total: 0
 		{"consul.upstream.service",
-			fmt.Sprintf(`^(?:tcp|http)\.upstream\.((%s)(?:\.%s)?(?:\.%s)?\.%s\.)`,
+			fmt.Sprintf(`^(?:tcp|http)\.upstream(?:_peered)?\.((%s)(?:\.%s)?(?:\.%s)?\.%s\.)`,
 				reSegment, reSegment, reSegment, reSegment)},
 
 		{"consul.upstream.datacenter",
 			fmt.Sprintf(`^(?:tcp|http)\.upstream\.(%s(?:\.%s)?(?:\.%s)?\.(%s)\.)`,
 				reSegment, reSegment, reSegment, reSegment)},
 
+		{"consul.upstream.peer",
+			fmt.Sprintf(`^(?:tcp|http)\.upstream_peered\.(%s(?:\.%s)?\.(%s)\.)`,
+				reSegment, reSegment, reSegment)},
+
 		{"consul.upstream.namespace",
-			fmt.Sprintf(`^(?:tcp|http)\.upstream\.(%s(?:\.(%s))?(?:\.%s)?\.%s\.)`,
+			fmt.Sprintf(`^(?:tcp|http)\.upstream(?:_peered)?\.(%s(?:\.(%s))?(?:\.%s)?\.%s\.)`,
 				reSegment, reSegment, reSegment, reSegment)},
 
 		{"consul.upstream.partition",
@@ -446,8 +478,8 @@ func resourceTagSpecifiers(omitDeprecatedTags bool) ([]string, error) {
 					reSegment, reSegment, reSegment, reSegment, reSegment, reSegment, reSegment, reSegment)},
 
 			{"consul.datacenter",
-				fmt.Sprintf(`^cluster\.((?:%s~)?(?:%s\.)?%s\.%s\.(?:%s\.)?(%s)\.%s\.%s\.consul\.)`,
-					reSegment, reSegment, reSegment, reSegment, reSegment, reSegment, reSegment, reSegment)},
+				fmt.Sprintf(`^cluster\.((?:%s~)?(?:%s\.)?%s\.%s\.(?:%s\.)?(%s)\.internal[^.]*\.%s\.consul\.)`,
+					reSegment, reSegment, reSegment, reSegment, reSegment, reSegment, reSegment)},
 
 			{"consul.routing_type",
 				fmt.Sprintf(`^cluster\.((?:%s~)?(?:%s\.)?%s\.%s\.(?:%s\.)?%s\.(%s)\.%s\.consul\.)`,
@@ -637,6 +669,29 @@ func (c *BootstrapConfig) generateListenerConfig(args *BootstrapTplArgs, bindAdd
 			]
 		}
 	}`
+
+	// Enable TLS on the prometheus listener if cert/private key are provided.
+	var tlsConfig string
+	if args.PrometheusCertFile != "" {
+		tlsConfig = `,
+				"transportSocket": {
+					"name": "tls",
+					"typedConfig": {
+						"@type": "type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.DownstreamTlsContext",
+						"commonTlsContext": {
+							"tlsCertificateSdsSecretConfigs": [
+								{
+									"name": "prometheus_cert"
+								}
+							],
+							"validationContextSdsSecretConfig": {
+								"name": "prometheus_validation_context"
+							}
+						}
+					}
+				}`
+	}
+
 	listenerJSON := `{
 		"name": "` + name + `_listener",
 		"address": {
@@ -694,10 +749,42 @@ func (c *BootstrapConfig) generateListenerConfig(args *BootstrapTplArgs, bindAdd
 							]
 						}
 					}
-				]
+				]` + tlsConfig + `
 			}
 		]
 	}`
+
+	secretsTemplate := `{
+		"name": "prometheus_cert",
+		"tlsCertificate": {
+			"certificateChain": {
+				"filename": "%s"
+			},
+			"privateKey": {
+				"filename": "%s"
+			}
+		}	
+	},
+	{
+		"name": "prometheus_validation_context",
+		"validationContext": {
+			%s
+		}
+	}`
+	var validationContext string
+	if args.PrometheusCAPath != "" {
+		validationContext = fmt.Sprintf(`"watchedDirectory": {
+			"path": "%s"
+		}`, args.PrometheusCAPath)
+	} else {
+		validationContext = fmt.Sprintf(`"trustedCa": {
+			"filename": "%s"
+		}`, args.PrometheusCAFile)
+	}
+	var secretsJSON string
+	if args.PrometheusCertFile != "" {
+		secretsJSON = fmt.Sprintf(secretsTemplate, args.PrometheusCertFile, args.PrometheusKeyFile, validationContext)
+	}
 
 	// Make sure we do not append the same cluster multiple times, as that will
 	// cause envoy startup to fail.
@@ -716,7 +803,80 @@ func (c *BootstrapConfig) generateListenerConfig(args *BootstrapTplArgs, bindAdd
 		listenerJSON = ",\n" + listenerJSON
 	}
 	args.StaticListenersJSON += listenerJSON
+
+	if args.StaticSecretsJSON != "" {
+		secretsJSON = ",\n" + secretsJSON
+	}
+	args.StaticSecretsJSON += secretsJSON
+
 	return nil
+}
+
+// appendTelemetryCollectorConfig generates config to enable a socket at path: <TelemetryCollectorBindSocketDir>/<hash of compound proxy ID>.sock
+// We take the hash of the compound proxy ID for a few reasons:
+//
+//   - The proxy ID is included because this socket path must be unique per proxy. Each Envoy proxy will ship
+//     its metrics to the collector using its own loopback listener at this path.
+//
+//   - The hash is needed because UNIX domain socket paths must be less than 104 characters. By using a b64 encoded
+//     SHA1 hash we end up with 27 chars for the name, 5 chars for the extension, and the remainder is saved for
+//     the configurable socket dir. The length of the directory's path is validated on writes to avoid going over.
+func appendTelemetryCollectorConfig(args *BootstrapTplArgs, telemetryCollectorBindSocketDir string) {
+	// Normalize namespace to "default". This ensures we match the namespace behaviour in proxycfg package,
+	// where a dynamic listener will be created at the same socket path via xDS.
+	ns := args.Namespace
+	if ns == "" {
+		ns = "default"
+	}
+	id := ns + "_" + args.ProxyID
+
+	h := sha1.New()
+	h.Write([]byte(id))
+	hash := base64.RawURLEncoding.EncodeToString(h.Sum(nil))
+	path := path.Join(telemetryCollectorBindSocketDir, hash+".sock")
+
+	if args.StatsSinksJSON != "" {
+		args.StatsSinksJSON += ",\n"
+	}
+	args.StatsSinksJSON += `{
+		"name": "envoy.stat_sinks.metrics_service",
+		"typed_config": {
+		  "@type": "type.googleapis.com/envoy.config.metrics.v3.MetricsServiceConfig",
+		  "transport_api_version": "V3",
+		  "grpc_service": {
+			"envoy_grpc": {
+			  "cluster_name": "consul_telemetry_collector_loopback"
+			}
+		  }
+		}
+	  }`
+
+	if args.StaticClustersJSON != "" {
+		args.StaticClustersJSON += ",\n"
+	}
+	args.StaticClustersJSON += fmt.Sprintf(`{
+		"name": "consul_telemetry_collector_loopback",
+		"type": "STATIC",
+		"http2_protocol_options": {},
+		"loadAssignment": {
+		  "clusterName": "consul_telemetry_collector_loopback",
+		  "endpoints": [
+			{
+			  "lbEndpoints": [
+				{
+				  "endpoint": {
+					"address": {
+					  "pipe": {
+						"path": "%s"
+					  }
+					}
+				  }
+				}
+			  ]
+			}
+		  ]
+		}
+	  }`, path)
 }
 
 func containsSelfAdminCluster(clustersJSON string) (bool, error) {
