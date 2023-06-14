@@ -334,7 +334,7 @@ jobs:
           name: ${{ env.zip_name }}
 
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@e81a89b1732b9c48d79cd809d8d81d79c4647a18 # v2.1.0
+        uses: docker/setup-qemu-action@2b82ce82d56a2a04d2637cd93a637ae1b359c0a7 # v2.2.0
         if: ${{ matrix.arch == 'arm' || matrix.arch == 'arm64' }}
         with:
           # this should be a comma-separated string as opposed to an array
@@ -399,7 +399,7 @@ jobs:
           name: ${{ env.pkg_name }}
 
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@e81a89b1732b9c48d79cd809d8d81d79c4647a18 # v2.1.0
+        uses: docker/setup-qemu-action@2b82ce82d56a2a04d2637cd93a637ae1b359c0a7 # v2.2.0
         with:
           platforms: all
 
@@ -436,7 +436,7 @@ jobs:
           name: ${{ env.pkg_name }}
 
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@e81a89b1732b9c48d79cd809d8d81d79c4647a18 # v2.1.0
+        uses: docker/setup-qemu-action@2b82ce82d56a2a04d2637cd93a637ae1b359c0a7 # v2.2.0
         with:
           platforms: all
 
