@@ -21,7 +21,7 @@ require (
 	github.com/armon/circbuf v0.0.0-20150827004946-bbbad097214e
 	github.com/armon/go-metrics v0.4.1
 	github.com/armon/go-radix v1.0.0
-	github.com/aws/aws-sdk-go v1.42.34
+	github.com/aws/aws-sdk-go v1.52.1
 	github.com/coredns/coredns v1.6.6
 	github.com/coreos/go-oidc v2.1.0+incompatible
 	github.com/docker/go-connections v0.4.0
@@ -102,12 +102,12 @@ require (
 	go.opentelemetry.io/otel/sdk/metric v0.39.0
 	go.opentelemetry.io/proto/otlp v0.19.0
 	go.uber.org/goleak v1.1.10
-	golang.org/x/crypto v0.1.0
+	golang.org/x/crypto v0.14.0
 	golang.org/x/exp v0.0.0-20230321023759-10a507213a29
-	golang.org/x/net v0.10.0
+	golang.org/x/net v0.17.0
 	golang.org/x/oauth2 v0.6.0
 	golang.org/x/sync v0.2.0
-	golang.org/x/sys v0.8.0
+	golang.org/x/sys v0.13.0
 	golang.org/x/time v0.3.0
 	google.golang.org/genproto v0.0.0-20230410155749-daa745c078e1
 	google.golang.org/grpc v1.55.0
@@ -243,8 +243,8 @@ require (
 	go.uber.org/atomic v1.9.0 // indirect
 	golang.org/x/lint v0.0.0-20210508222113-6edffad5e616 // indirect
 	golang.org/x/mod v0.10.0 // indirect
-	golang.org/x/term v0.8.0 // indirect
-	golang.org/x/text v0.9.0 // indirect
+	golang.org/x/term v0.13.0 // indirect
+	golang.org/x/text v0.13.0 // indirect
 	golang.org/x/tools v0.9.1 // indirect
 	google.golang.org/api v0.114.0 // indirect
 	google.golang.org/appengine v1.6.7 // indirect
