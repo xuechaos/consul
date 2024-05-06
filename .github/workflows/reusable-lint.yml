@@ -46,7 +46,7 @@ jobs:
           go-version-file: 'go.mod'
       - run: go env
       - name: lint-${{ matrix.directory }}
-        uses: golangci/golangci-lint-action@08e2f20817b15149a52b5b3ebe7de50aff2ba8c5 # v3.4.0
+        uses: golangci/golangci-lint-action@38e1018663fa5173f3968ea0777460d3de38f256 # v5.3.0
         with:
           working-directory: ${{ matrix.directory }}
           version: v1.51.1
