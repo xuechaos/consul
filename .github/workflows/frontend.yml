@@ -94,7 +94,7 @@ jobs:
       run: npm install -g yarn
 
     - name: Install Chrome
-      uses: browser-actions/setup-chrome@c485fa3bab6be59dce18dbc18ef6ab7cbc8ff5f1 # v1.2.0
+      uses: browser-actions/setup-chrome@9683066f53b47e92c4104e1bd5535aff208c3530 # v1.6.2
 
     - name: Install dependencies
       working-directory: ui
