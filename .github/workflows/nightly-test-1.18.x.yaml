@@ -35,7 +35,7 @@ jobs:
           package_json_file: ui/package.json
 
       - name: Setup node and pnpm cache
-        uses: actions/setup-node@60edb5dd545a775178f52524783378180af0d1f8 # v4.0.2
+        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
         with:
           node-version-file: "./ui/package.json"
           cache: "pnpm"
@@ -74,7 +74,7 @@ jobs:
           package_json_file: ui/package.json
 
       - name: Setup node and pnpm cache
-        uses: actions/setup-node@60edb5dd545a775178f52524783378180af0d1f8 # v4.0.2
+        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
         with:
           node-version-file: "./ui/package.json"
           cache: "pnpm"
@@ -119,7 +119,7 @@ jobs:
           package_json_file: ui/package.json
 
       - name: Setup node and pnpm cache
-        uses: actions/setup-node@60edb5dd545a775178f52524783378180af0d1f8 # v4.0.2
+        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
         with:
           node-version-file: "./ui/package.json"
           cache: "pnpm"
@@ -159,7 +159,7 @@ jobs:
           package_json_file: ui/package.json
 
       - name: Setup node and pnpm cache
-        uses: actions/setup-node@60edb5dd545a775178f52524783378180af0d1f8 # v4.0.2
+        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
         with:
           node-version-file: "./ui/package.json"
           cache: "pnpm"
@@ -204,7 +204,7 @@ jobs:
           package_json_file: ui/package.json
 
       - name: Setup node and pnpm cache
-        uses: actions/setup-node@60edb5dd545a775178f52524783378180af0d1f8 # v4.0.2
+        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
         with:
           node-version-file: "./ui/package.json"
           cache: "pnpm"
@@ -241,7 +241,7 @@ jobs:
           package_json_file: ui/package.json
 
       - name: Setup node and pnpm cache
-        uses: actions/setup-node@60edb5dd545a775178f52524783378180af0d1f8 # v4.0.2
+        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
         with:
           node-version-file: "./ui/package.json"
           cache: "pnpm"
